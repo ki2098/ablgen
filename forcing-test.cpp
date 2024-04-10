@@ -7,8 +7,8 @@
 
 using namespace std;
 
-const static int CX  = 100;
-const static int CY  = 100;
+const static int CX  = 50;
+const static int CY  = 50;
 const static int GC  = 3;
 const static int CCX = CX + 2*GC;
 const static int CCY = CY + 2*GC;
@@ -22,10 +22,10 @@ const static double DXI = 1./DX;
 const static double DYI = 1./DY;
 const static double DDXI = 1./DDX;
 const static double DDYI = 1./DDY;
-const static double DT = 1e-3;
+const static double DT = 1e-4;
 const static double DTI = 1./DT;
 
-const static double RE = 10000;
+const static double RE = 1e4;
 const static double REI = 1./RE;
 const static double SOR_OMEGA = 1.2;
 int SOR_ITER;
@@ -38,7 +38,7 @@ double RMS_DIV;
 
 const static double UTSAVG = 0.0;
 const static double VTSAVG = 0.0;
-const static double FORCING_EPS = 0.001;
+const static double FORCING_EPS = 0.01;
 double TURB_INTEN;
 double TURB_K;
 
@@ -47,7 +47,7 @@ double U[2][CCX][CCY]={}, UU[2][CCX][CCY]={}, P[CCX][CCY]={}, UP[2][CCX][CCY]={}
 double RHS[CCX][CCY]={};
 double FF[2][CCX][CCY];
 double NUT[CCX][CCY];
-const static double C_SMAGORINSKY = 0.1;
+const static double C_SMAGORINSKY = 0.2;
 
 inline double gettime() {
     return ISTEP*DT;
