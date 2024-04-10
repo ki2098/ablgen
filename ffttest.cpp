@@ -3,7 +3,8 @@
 #include <math.h>
 #include "fftw3.h"
 
-const static int N_SAMPLES = 100;
+const static int N_SAMPLES = 50;
+const static double L = 1.;
 
 const static int REAL = 0;
 const static int IMAG = 1;
@@ -14,15 +15,21 @@ using namespace std;
 
 void generate_signal(fftw_complex *signal) {
     for (int i = 0; i < N_SAMPLES; i ++) {
-        double theta = i / double(N_SAMPLES*M_PI);
-        signal[i][REAL] = 1.*cos(10.*theta) + .5*cos(25.*theta);
-        signal[i][IMAG] = 1.*sin(10.*theta) + .5*sin(25.*theta);
+        double theta = i*(L/N_SAMPLES)*2*M_PI;
+        signal[i][REAL] = 1.*cos(2.*theta) + .5*cos(4.*theta) + .25*cos(8.*theta);
+        signal[i][IMAG] = 1.*sin(2.*theta) + .5*sin(4.*theta) + .25*sin(8.*theta);
     }
 }
 
 void print_complex_seq(fftw_complex *seq, int size) {
     for (int i = 0; i < size; i ++) {
         printf("%5d %12.3e + i %12.3e\n", i, seq[i][REAL], seq[i][IMAG]);
+    }
+}
+
+void print_all(fftw_complex *signal, fftw_complex *reconstruct, fftw_complex *series, int size) {
+    for (int i = 0; i < size; i ++) {
+        printf("%5d| %8.3lf + i %8.3lf| %8.3lf + i %8.3lf| %8.3lf + i %8.3lf\n", i, signal[i][REAL], signal[i][IMAG], reconstruct[i][REAL], reconstruct[i][IMAG], series[i][REAL], series[i][IMAG]);
     }
 }
 
@@ -45,10 +52,7 @@ int main() {
     fftw_execute(plan);
     scale_complex_seq(result, N_SAMPLES, 1./N_SAMPLES);
     fftw_execute(invr);
-    printf("original series:\n");
-    print_complex_seq(signal, N_SAMPLES);
-    printf("reconstructed series:\n");
-    print_complex_seq(recons, N_SAMPLES);
+    print_all(signal, recons, result, N_SAMPLES);
 
     fftw_destroy_plan(plan);
 
