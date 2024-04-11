@@ -4,7 +4,8 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/usr/bin/fftw/include"
+                "/usr/local/fftw/include",
+                "~/Workspace/eigen"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

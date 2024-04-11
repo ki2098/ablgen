@@ -1,5 +1,7 @@
 {
     "files.associations": {
-        "*.ipp": "cpp"
+        "*.ipp": "cpp",
+        "eigen": "cpp",
+        "core": "cpp"
     }
 }
