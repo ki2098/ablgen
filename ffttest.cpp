@@ -3,8 +3,7 @@
 #include <math.h>
 #include "fftw3.h"
 
-const static int N_SAMPLES = 50;
-const static double L = 1.;
+const static int N_SAMPLES = 25;
 
 const static int REAL = 0;
 const static int IMAG = 1;
@@ -15,7 +14,7 @@ using namespace std;
 
 void generate_signal(fftw_complex *signal) {
     for (int i = 0; i < N_SAMPLES; i ++) {
-        double theta = i*(L/N_SAMPLES)*2*M_PI;
+        double theta = (i/double(N_SAMPLES))*2.*M_PI;
         signal[i][REAL] = 1.*cos(2.*theta) + .5*cos(4.*theta) + .25*cos(8.*theta);
         signal[i][IMAG] = 1.*sin(2.*theta) + .5*sin(4.*theta) + .25*sin(8.*theta);
     }
