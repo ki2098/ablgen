@@ -9,6 +9,9 @@
 
 const static int dim = 2;
 const static int nsamples = 10000;
+std::random_device rd{};
+std::mt19937 gen{rd()};
+std::normal_distribution<double> nd(0.0, 1.0);
 
 int main() {
     Eigen::VectorXd mean(dim);
@@ -22,9 +25,7 @@ int main() {
 
     std::cout << "Cholesky:\n" << A << std::endl;
 
-    std::random_device rd{};
-    std::mt19937 gen{rd()};
-    std::normal_distribution<double> nd(0.0, 1.0);
+    
 
     FILE *file = fopen("mvgauss.csv", "w");
     fprintf(file, "x,y\n");
