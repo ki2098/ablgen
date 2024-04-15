@@ -8,9 +8,9 @@
 
 using namespace std;
 
-const static int    CX   = 16;
-const static int    CY   = 16;
-const static int    CZ   = 16;
+const static int    CX   = 32;
+const static int    CY   = 32;
+const static int    CZ   = 32;
 const static int    GC   = 3;
 const static int    CCX  = CX +2*GC;
 const static int    CCY  = CY +2*GC;
@@ -39,27 +39,29 @@ const static int    SOR_MAXITER = 1000;
 const static double SOR_EPS     = 1e-6;
 double              SOR_ERR;
 int                 ISTEP;
-int                 MAXSTEP     = int(100./DT);
+int                 MAXSTEP     = int(50./DT);
 double              RMS_DIV;
 
 const static double C_SMAGORINSKY = 0.1;
+double              TURB_K;
 
-const static double FORCING_EFK = 0.01;
+const static double LOW_PASS = 2.;
+const static double FORCING_EFK = 1e-3;
+const static double PI = M_PI;
 
 double X[CCX]={}, Y[CCY]={}, Z[CCZ]={};
 double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={};
 double RHS[CCX][CCY][CCZ]={};
 double FF[3][CCX][CCY][CCZ]={};
 
-fftw_complex FFC[3][CX*CY*CZ]={};
-fftw_complex FFK[3][CX*CY*CZ]={};
 const static int REAL = 0;
 const static int IMAG = 1;
 
+double MAX_CFL;
+
 double NUT[CCX][CCY][CCZ]={};
 
-random_device RD{};
-mt19937_64 GEN{RD()};
+default_random_engine GEN;
 normal_distribution<double> GAUSS_DISTRIBUTION_A1(0., 1.);
 normal_distribution<double> GAUSS_DISTRIBUTION_A2(0., 1.);
 normal_distribution<double> GAUSS_DISTRIBUTION_A3(0., 1.);
@@ -72,6 +74,17 @@ inline int CIDX(int i, int j, int k) {
 }
 
 double gettime() {return ISTEP*DT;}
+
+double limit(double center, double distance, double seed) {
+    distance = fabs(distance);
+    if (seed < center - distance) {
+        return center - distance;
+    } else if (seed > center + distance) {
+        return center + distance;
+    } else {
+        return seed;
+    }
+}
 
 template<typename T>
 inline T sq(T a) {return a*a;}
@@ -138,12 +151,12 @@ double diffusion_core(double phi[CCX][CCY][CCZ], double nut[CCX][CCY][CCZ], int 
 }
 
 void prediction() {
-    memcpy(&UP[0][0][0][0], &U[0][0][0][0], sizeof(double)*3*CCX*CCY*CCZ);
     for (int d = 0; d < 3; d ++) {
+        #pragma omp parallel for collapse(3)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
-            double advc = advection_core(UP[d], UP[0], UP[1], UP[2], UU[1], UU[2], UU[3], i, j, k);
+            double advc = advection_core(UP[d], UP[0], UP[1], UP[2], UU[0], UU[1], UU[2], i, j, k);
             double diff = diffusion_core(UP[d], NUT, i, j, k);
             U[d][i][j][k] = UP[d][i][j][k] + DT*(- advc + diff + FF[d][i][j][k]);
         }}}
@@ -151,21 +164,25 @@ void prediction() {
 }
 
 void interpolation() {
+    #pragma omp parallel for collapse(3)
     for (int i = GC-1; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[0][i][j][k] = .5*(U[0][i][j][k] + U[0][i+1][j][k]);
     }}}
+    #pragma omp parallel for collapse(3)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC-1; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[1][i][j][k] = .5*(U[1][i][j][k] + U[1][i][j+1][k]);
     }}}
+    #pragma omp parallel for collapse(3)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC-1; k < GC+CZ; k ++) {
         UU[2][i][j][k] = .5*(U[2][i][j][k] + U[2][i][j][k+1]);
     }}}
+    #pragma omp parallel for collapse(3)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -181,6 +198,7 @@ double sor_rb_core(double phi[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, 
         double phiage = (phi[i+1][j][k] + phi[i-1][j][k])*DDXI;
         phiage       += (phi[i][j+1][k] + phi[i][j-1][k])*DDYI;
         phiage       += (phi[i][j][k+1] + phi[i][j][k-1])*DDZI;
+        phiage       += rhs[i][j][k];
         double dphi   = .5*phiage/(DDXI + DDYI + DDZI) - phi[i][j][k];
         phi[i][j][k] += SOR_OMEGA*dphi;
         return sq(dphi);
@@ -189,24 +207,27 @@ double sor_rb_core(double phi[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, 
     }
 }
 
-void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int pad) {
+void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int margin) {
     for (int d = 0; d < dim; d ++) {
+        #pragma omp parallel for collapse(2)
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
-        for (int offset = 0; offset < pad; offset ++) {
-            phi[d][GC -1-offset][j][k] = phi[d][GC+CX-1-offset][j][k];
+        for (int offset = 0; offset < margin; offset ++) {
+            phi[d][GC- 1-offset][j][k] = phi[d][GC+CX-1-offset][j][k];
             phi[d][GC+CX+offset][j][k] = phi[d][GC     +offset][j][k];
         }}}
+        #pragma omp parallel for collapse(2)
         for (int i = GC; i < GC+CX; i ++) {
         for (int k = GC; k < GC+CZ; k ++) {
-        for (int offset = 0; offset < pad; offset ++) {
-            phi[d][i][GC -1-offset][k] = phi[d][i][GC+CY-1-offset][k];
+        for (int offset = 0; offset < margin; offset ++) {
+            phi[d][i][GC- 1-offset][k] = phi[d][i][GC+CY-1-offset][k];
             phi[d][i][GC+CY+offset][k] = phi[d][i][GC     +offset][k];
         }}}
+        #pragma omp parallel for collapse(2)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
-        for (int offset = 0; offset < pad; offset ++) {
-            phi[d][i][j][GC -1-offset] = phi[d][i][j][GC+CZ-1-offset];
+        for (int offset = 0; offset < margin; offset ++) {
+            phi[d][i][j][GC- 1-offset] = phi[d][i][j][GC+CZ-1-offset];
             phi[d][i][j][GC+CZ+offset] = phi[d][i][j][GC     +offset];
         }}}
     }
@@ -216,12 +237,14 @@ void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int pad) {
 void ls_poisson() {
     for (SOR_ITER = 1; SOR_ITER <= SOR_MAXITER; SOR_ITER ++) {
         SOR_ERR = 0.;
+        #pragma omp parallel for reduction(+:SOR_ERR) collapse(3)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
             SOR_ERR += sor_rb_core(P, RHS, i, j, k, 0);
         }}}
         periodic_bc(&P, 1, 1);
+        #pragma omp parallel for reduction(+:SOR_ERR) collapse(3)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
@@ -237,12 +260,14 @@ void ls_poisson() {
 
 void pressure_centralize() {
     double sum = 0;
+    #pragma omp parallel for reduction(+:sum) collapse(3)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
         sum += P[i][j][k];
     }}}
     double avg = sum / double(CX*CY*CZ);
+    #pragma omp parallel for collapse(3)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -251,6 +276,7 @@ void pressure_centralize() {
 }
 
 void projection_center() {
+    #pragma omp parallel for collapse(3)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -261,29 +287,35 @@ void projection_center() {
 }
 
 void projection_interface() {
+    #pragma omp parallel for collapse(3)
     for (int i = GC-1; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[0][i][j][k] -= DT*DXI*(P[i+1][j][k] - P[i][j][k]);
     }}}
+    #pragma omp parallel for collapse(3)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC-1; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[1][i][j][k] -= DT*DYI*(P[i][j+1][k] - P[i][j][k]);
     }}}
+    #pragma omp parallel for collapse(3)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC-1; k < GC+CZ; k ++) {
         UU[2][i][j][k] -= DT*DZI*(P[i][j][k+1] - P[i][j][k]);
     }}}
     RMS_DIV = 0;
+    #pragma omp parallel for reduction(+:RMS_DIV) collapse(3)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
         double dsq = DXI*(UU[0][i][j][k] - UU[0][i-1][j][k]);
         dsq       += DYI*(UU[1][i][j][k] - UU[1][i][j-1][k]);
         dsq       += DZI*(UU[2][i][j][k] - UU[2][i][j][k-1]);
+        RMS_DIV   += sq(dsq);
     }}}
+    RMS_DIV = sqrt(RMS_DIV/(CX*CY*CZ));
 }
 
 void turbulence_core(double u[CCX][CCY][CCZ], double v[CCX][CCY][CCZ], double w[CCX][CCY][CCZ], double nut[CCX][CCY][CCZ], int i, int j, int k) {
@@ -321,6 +353,7 @@ void turbulence_core(double u[CCX][CCY][CCZ], double v[CCX][CCY][CCZ], double w[
 }
 
 void turbulence() {
+    #pragma omp parallel for collapse(3)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -328,36 +361,179 @@ void turbulence() {
     }}}
 }
 
+int NNX, NNY, NNZ;
+
+int nnidx(int i, int j, int k) {
+    return i*NNY*NNZ + j*NNZ + k;
+}
+
+
+fftw_complex *ffk[3];
+
 void kforce_core(fftw_complex forcek1[CX*CY*CZ], fftw_complex forcek2[CX*CY*CZ], fftw_complex forcek3[CX*CY*CZ], int i, int j, int k) {
+    if (i + j + k == 0) {
+        forcek1[nnidx(i,j,k)][REAL] = 0.;
+        forcek1[nnidx(i,j,k)][IMAG] = 0.;
+        forcek2[nnidx(i,j,k)][REAL] = 0.;
+        forcek2[nnidx(i,j,k)][IMAG] = 0.;
+        forcek3[nnidx(i,j,k)][REAL] = 0.;
+        forcek3[nnidx(i,j,k)][IMAG] = 0.;
+        return;
+    }
     double a1, a2, a3, b1, b2, b3, k1, k2, k3;
-    k1 = (i - GC)*2*M_PI/LX;
-    k2 = (j - GC)*2*M_PI/LY;
-    k3 = (k - GC)*2*M_PI/LZ;
-    a1 = GAUSS_DISTRIBUTION_A1(GEN);
-    a2 = GAUSS_DISTRIBUTION_A2(GEN);
-    a3 = GAUSS_DISTRIBUTION_A3(GEN);
-    b1 = GAUSS_DISTRIBUTION_B1(GEN);
-    b2 = GAUSS_DISTRIBUTION_B2(GEN);
-    b3 = GAUSS_DISTRIBUTION_B3(GEN);
+    k1 = i*2*PI/LX;
+    k2 = j*2*PI/LY;
+    k3 = k*2*PI/LZ;
+    a1 = limit(0., 2., GAUSS_DISTRIBUTION_A1(GEN));
+    a2 = limit(0., 2., GAUSS_DISTRIBUTION_A2(GEN));
+    a3 = limit(0., 2., GAUSS_DISTRIBUTION_A3(GEN));
+    b1 = limit(0., 2., GAUSS_DISTRIBUTION_B1(GEN));
+    b2 = limit(0., 2., GAUSS_DISTRIBUTION_B2(GEN));
+    b3 = limit(0., 2., GAUSS_DISTRIBUTION_B3(GEN));
     double kabs = sqrt(sq(k1) + sq(k2) + sq(k3));
-    double Cf = sqrt(FORCING_EFK/(16*M_PI*sq(sq(kabs))*DT));
-    forcek1[CIDX(i,j,k)][REAL] = k2*a3 - k3*a2;
-    forcek1[CIDX(i,j,k)][IMAG] = k2*b3 - k3*b2;
-    forcek2[CIDX(i,j,k)][REAL] = k3*a1 - k1*a3;
-    forcek2[CIDX(i,j,k)][IMAG] = k3*b1 - k1*b3;
-    forcek3[CIDX(i,j,k)][REAL] = k1*a2 - k2*a1;
-    forcek3[CIDX(i,j,k)][IMAG] = k1*b2 - k2*b1;
+    double Cf = sqrt(FORCING_EFK/(16*PI*sq(sq(kabs))*DT));
+    forcek1[nnidx(i,j,k)][REAL] = Cf*(k2*a3 - k3*a2);
+    forcek1[nnidx(i,j,k)][IMAG] = Cf*(k2*b3 - k3*b2);
+    forcek2[nnidx(i,j,k)][REAL] = Cf*(k3*a1 - k1*a3);
+    forcek2[nnidx(i,j,k)][IMAG] = Cf*(k3*b1 - k1*b3);
+    forcek3[nnidx(i,j,k)][REAL] = Cf*(k1*a2 - k2*a1);
+    forcek3[nnidx(i,j,k)][IMAG] = Cf*(k1*b2 - k2*b1);
 }
 
 void scale_complex_seq(fftw_complex *seq, double scale, int size) {
+    #pragma omp parallel for
     for (int i = 0; i < size; i ++) {
         seq[i][REAL] *= scale;
         seq[i][IMAG] *= scale;
     }
 }
 
+void generate_force() {
+    for (int i = 0; i < NNX; i ++) {
+    for (int j = 0; j < NNY; j ++) {
+    for (int k = 0; k < NNZ; k ++) {
+        double k1 = i*2*PI/LX;
+        double k2 = j*2*PI/LY;
+        double k3 = k*2*PI/LZ;
+        double kabs = sqrt(sq(k1) + sq(k2) + sq(k3));
+        if (kabs <= LOW_PASS) {
+            kforce_core(ffk[0], ffk[1], ffk[2], i, j, k);
+        }
+    }}}
+    // printf("wavenumber space force generated\n");
+    #pragma omp parallel for collapse(3)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        FF[0][i][j][k] = 0.;
+        FF[1][i][j][k] = 0.;
+        FF[2][i][j][k] = 0.;
+        int I1 = i - GC;
+        int I2 = j - GC;
+        int I3 = k - GC;
+        for (int K1 = 0; K1 < NNX; K1 ++) {
+        for (int K2 = 0; K2 < NNY; K2 ++) {
+        for (int K3 = 0; K3 < NNZ; K3 ++) {
+            double th1 = - 2.*PI*I1*K1/double(CX);
+            double th2 = - 2.*PI*I2*K2/double(CY);
+            double th3 = - 2.*PI*I3*K3/double(CZ);
+            double Real = cos(th1 + th2 + th3);
+            double Imag = sin(th1 + th2 + th3);
+            FF[0][i][j][k] += ffk[0][nnidx(K1,K2,K3)][REAL]*Real - ffk[0][nnidx(K1,K2,K3)][IMAG]*Imag;
+            FF[1][i][j][k] += ffk[1][nnidx(K1,K2,K3)][REAL]*Real - ffk[1][nnidx(K1,K2,K3)][IMAG]*Imag;
+            FF[2][i][j][k] += ffk[2][nnidx(K1,K2,K3)][REAL]*Real - ffk[2][nnidx(K1,K2,K3)][IMAG]*Imag;
+        }}}
+    }}}
+    // printf("physical space force generated\n");
+}
+
+void turbulence_kinetic_energy() {
+    double ksum = 0;
+    #pragma omp parallel for reduction(+:ksum) collapse(3)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        double u = U[0][i][j][k];
+        double v = U[1][i][j][k];
+        double w = U[2][i][j][k];
+        ksum += .5*sqrt(sq(u) + sq(v) + sq(w));
+    }}}
+    TURB_K = ksum / (CX*CY*CZ);
+}
+
+void max_cfl() {
+    MAX_CFL = 0;
+    #pragma omp parallel for reduction(max:MAX_CFL) collapse(3)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        double u = fabs(U[0][i][j][k]);
+        double v = fabs(U[1][i][j][k]);
+        double w = fabs(U[2][i][j][k]);
+        double cfl_local = DT*(u/DX + v/DY + w/DZ);
+        if (cfl_local > MAX_CFL) {
+            MAX_CFL = cfl_local;
+        }
+    }}}
+}
+
+void main_loop() {
+    memcpy(&UP[0][0][0][0], &U[0][0][0][0], sizeof(double)*3*CCX*CCY*CCZ);
+    generate_force();
+    prediction();
+    periodic_bc(U, 3, 2);
+    interpolation();
+
+    ls_poisson();
+    pressure_centralize();
+
+    projection_center();
+    projection_interface();
+    periodic_bc(U, 3, 2);
+
+    // turbulence();
+    periodic_bc(&NUT, 1, 1);
+
+    turbulence_kinetic_energy();
+    max_cfl();
+}
+
+void output_field(int n) {
+    char fname[128];
+    sprintf(fname, "force-field.csv.%d", n);
+    FILE *file = fopen(fname, "w");
+    fprintf(file, "x,y,z,u,v,w,p,fx,fy,fz\n");
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        fprintf(file, "%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], FF[0][i][j][k], FF[1][i][j][k], FF[2][i][j][k]);
+    }}}
+    fclose(file);
+}
+
+void output_kspace_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*CY*CZ], fftw_complex forcez[CX*CY*CZ]) {
+    FILE *file = fopen("force-k.csv", "w");
+    fprintf(file, "i,j,k,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
+    double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
+    for (int k = 0; k < NNX; k ++) {
+    for (int j = 0; j < NNY; j ++) {
+    for (int i = 0; i < NNZ; i ++) {
+        fxr = forcex[nnidx(i,j,k)][REAL];
+        fxi = forcex[nnidx(i,j,k)][IMAG];
+        fyr = forcey[nnidx(i,j,k)][REAL];
+        fyi = forcey[nnidx(i,j,k)][IMAG];
+        fzr = forcez[nnidx(i,j,k)][REAL];
+        fzi = forcez[nnidx(i,j,k)][IMAG];
+        fxm = sqrt(sq(fxr) + sq(fxi));
+        fym = sqrt(sq(fyr) + sq(fyi));
+        fzm = sqrt(sq(fzr) + sq(fzi));
+        fprintf(file, "%5d,%5d,%5d,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", i, j, k, fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm);
+    }}}
+    fclose(file);
+}
+
 void output_complex_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*CY*CZ], fftw_complex forcez[CX*CY*CZ]) {
-    FILE *file = fopen("force.csv", "w");
+    FILE *file = fopen("force-complex.csv", "w");
     fprintf(file, "x,y,z,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
     double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
     for (int k = 0; k < CZ; k ++) {
@@ -377,32 +553,46 @@ void output_complex_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*
     fclose(file);
 }
 
-void generate_force() {
-    for (int i = 1; i < CX; i ++) {
-    for (int j = 1; j < CY; j ++) {
-    for (int k = 1; k < CZ; k ++) {
-        double k1 = (i - GC)*2*M_PI/LX;
-        double k2 = (j - GC)*2*M_PI/LY;
-        double k3 = (k - GC)*2*M_PI/LZ;
-        double kabs = sqrt(sq(k1) + sq(k2) + sq(k3));
-        if (kabs <= 2.) {
-            kforce_core(FFK[0], FFK[1], FFK[2], i, j, k);
-        }
+void output_force(double forcex[CCX][CCY][CCZ], double forcey[CCX][CCY][CCZ], double forcez[CCX][CCY][CCZ]) {
+    FILE *file = fopen("force.csv", "w");
+    fprintf(file, "x,y,z,fx,fy,fz\n");
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        fprintf(file, "%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", X[i], Y[j], Z[k], forcex[i][j][k], forcey[i][j][k], forcez[i][j][k]);
     }}}
-    // scale_complex_seq(FFK[0], 1./(CX*CY*CZ), CX*CY*CZ);
-    // scale_complex_seq(FFK[1], 1./(CX*CY*CZ), CX*CY*CZ);
-    // scale_complex_seq(FFK[2], 1./(CX*CY*CZ), CX*CY*CZ);
-    fftw_plan planx = fftw_plan_dft_3d(CX, CY, CZ, FFK[0], FFC[0], FFTW_BACKWARD, FFTW_ESTIMATE|FFTW_PRESERVE_INPUT);
-    fftw_plan plany = fftw_plan_dft_3d(CX, CY, CZ, FFK[1], FFC[1], FFTW_BACKWARD, FFTW_ESTIMATE|FFTW_PRESERVE_INPUT);
-    fftw_plan planz = fftw_plan_dft_3d(CX, CY, CZ, FFK[2], FFC[2], FFTW_BACKWARD, FFTW_ESTIMATE|FFTW_PRESERVE_INPUT);
-    fftw_execute(planx);
-    fftw_execute(plany);
-    fftw_execute(planz);
-    fftw_destroy_plan(planx);
-    fftw_destroy_plan(plany);
-    fftw_destroy_plan(planz);
-    
+    fclose(file);
 }
+
+// void generate_force() {
+//     for (int i = 0; i < CX; i ++) {
+//     for (int j = 0; j < CY; j ++) {
+//     for (int k = 0; k < CZ; k ++) {
+//         if (i + j + k == 0) {
+//             continue;
+//         }
+//         double k1 = i*2*PI/LX;
+//         double k2 = j*2*PI/LY;
+//         double k3 = k*2*PI/LZ;
+//         double kabs = sqrt(sq(k1) + sq(k2) + sq(k3));
+//         if (kabs <= LOW_PASS) {
+//             kforce_core(FFK[0], FFK[1], FFK[2], i, j, k);
+//             printf("%d %d %d\n", i, j, k);
+//         }
+//     }}}
+//     // scale_complex_seq(FFK[0], 1./(CX*CY*CZ), CX*CY*CZ);
+//     // scale_complex_seq(FFK[1], 1./(CX*CY*CZ), CX*CY*CZ);
+//     // scale_complex_seq(FFK[2], 1./(CX*CY*CZ), CX*CY*CZ);
+//     fftw_plan planx = fftw_plan_dft_3d(CX, CY, CZ, FFK[0], FFC[0], FFTW_BACKWARD, FFTW_ESTIMATE);
+//     fftw_plan plany = fftw_plan_dft_3d(CX, CY, CZ, FFK[1], FFC[1], FFTW_BACKWARD, FFTW_ESTIMATE);
+//     fftw_plan planz = fftw_plan_dft_3d(CX, CY, CZ, FFK[2], FFC[2], FFTW_BACKWARD, FFTW_ESTIMATE);
+//     fftw_execute(planx);
+//     fftw_execute(plany);
+//     fftw_execute(planz);
+//     fftw_destroy_plan(planx);
+//     fftw_destroy_plan(plany);
+//     fftw_destroy_plan(planz);
+// }
 
 void make_grid() {
     for (int i = 0; i < GC+CX; i ++) {
@@ -417,9 +607,33 @@ void make_grid() {
 }
 
 int main() {
-    make_grid();
-    generate_force();
-    output_complex_force(FFC[0], FFC[1], FFC[2]);
+    const int MAX_NX = int(LOW_PASS*LX/(2*PI));
+    const int MAX_NY = int(LOW_PASS*LY/(2*PI));
+    const int MAX_NZ = int(LOW_PASS*LZ/(2*PI));
+    NNX = MAX_NX + 1;
+    NNY = MAX_NY + 1;
+    NNZ = MAX_NZ + 1;
+    printf("filtered wavenumber space %dx%dx%d\n", NNX, NNY, NNZ);
 
+    ffk[0] = fftw_alloc_complex(NNX*NNY*NNZ);
+    ffk[1] = fftw_alloc_complex(NNX*NNY*NNZ);
+    ffk[2] = fftw_alloc_complex(NNX*NNY*NNZ);
+    
+    make_grid();
+
+    for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
+        main_loop();
+        printf("\r%9d, %12.5lf, %3d, %15e, %15e, %15e, %15e", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K, MAX_CFL);
+        fflush(stdout);
+        if (ISTEP%int(1./DT) == 0) {
+            output_field(ISTEP/int(1./DT));
+            printf("\n");
+        }
+    }
+    printf("\n");
+
+    fftw_free(ffk[0]);
+    fftw_free(ffk[1]);
+    fftw_free(ffk[2]);
     return 0;
 }
