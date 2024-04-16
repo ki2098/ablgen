@@ -4,6 +4,7 @@
 #include <cstring>
 #include <math.h>
 #include <random>
+#include <cuda.h>
 
 typedef double complex[2];
 
