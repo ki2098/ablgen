@@ -4,7 +4,8 @@
 #include <cstring>
 #include <math.h>
 #include <random>
-#include "fftw3.h"
+
+typedef double complex[2];
 
 using namespace std;
 
@@ -378,9 +379,9 @@ int nnidx(int i, int j, int k) {
 }
 
 
-fftw_complex *ffk[3];
+complex *ffk[3];
 
-void kforce_core(fftw_complex forcek1[CX*CY*CZ], fftw_complex forcek2[CX*CY*CZ], fftw_complex forcek3[CX*CY*CZ], int i, int j, int k) {
+void kforce_core(complex forcek1[CX*CY*CZ], complex forcek2[CX*CY*CZ], complex forcek3[CX*CY*CZ], int i, int j, int k) {
     if (i + j + k == 0) {
         forcek1[nnidx(i,j,k)][REAL] = 0.;
         forcek1[nnidx(i,j,k)][IMAG] = 0.;
@@ -410,7 +411,7 @@ void kforce_core(fftw_complex forcek1[CX*CY*CZ], fftw_complex forcek2[CX*CY*CZ],
     forcek3[nnidx(i,j,k)][IMAG] = Cf*(k1*b2 - k2*b1);
 }
 
-void scale_complex_seq(fftw_complex *seq, double scale, int size) {
+void scale_complex_seq(complex *seq, double scale, int size) {
     #pragma omp parallel for
     for (int i = 0; i < size; i ++) {
         seq[i][REAL] *= scale;
@@ -542,7 +543,7 @@ void output_field(int n) {
     fclose(file);
 }
 
-void output_kspace_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*CY*CZ], fftw_complex forcez[CX*CY*CZ]) {
+void output_kspace_force(complex forcex[CX*CY*CZ], complex forcey[CX*CY*CZ], complex forcez[CX*CY*CZ]) {
     FILE *file = fopen("force-k.csv", "w");
     fprintf(file, "i,j,k,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
     double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
@@ -563,7 +564,7 @@ void output_kspace_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*C
     fclose(file);
 }
 
-void output_complex_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*CY*CZ], fftw_complex forcez[CX*CY*CZ]) {
+void output_complex_force(complex forcex[CX*CY*CZ], complex forcey[CX*CY*CZ], complex forcez[CX*CY*CZ]) {
     FILE *file = fopen("force-complex.csv", "w");
     fprintf(file, "x,y,z,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
     double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
@@ -616,9 +617,9 @@ int main() {
     NNZ = MAX_NZ + 1;
     printf("filtered wavenumber space %dx%dx%d\n", NNX, NNY, NNZ);
 
-    ffk[0] = fftw_alloc_complex(NNX*NNY*NNZ);
-    ffk[1] = fftw_alloc_complex(NNX*NNY*NNZ);
-    ffk[2] = fftw_alloc_complex(NNX*NNY*NNZ);
+    ffk[0] = (complex*)malloc(sizeof(complex)*NNX*NNY*NNZ);
+    ffk[1] = (complex*)malloc(sizeof(complex)*NNX*NNY*NNZ);
+    ffk[2] = (complex*)malloc(sizeof(complex)*NNX*NNY*NNZ);
 
     #pragma acc enter data copyin(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     init_env();
@@ -639,8 +640,8 @@ int main() {
     #pragma acc exit data delete(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     finialize_env();
 
-    fftw_free(ffk[0]);
-    fftw_free(ffk[1]);
-    fftw_free(ffk[2]);
+    free(ffk[0]);
+    free(ffk[1]);
+    free(ffk[2]);
     return 0;
 }
