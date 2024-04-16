@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <fstream>
 #include <cstring>
-#include <cmath>
+#include <math.h>
 #include <random>
 #include "fftw3.h"
 
@@ -49,18 +49,27 @@ const static double LOW_PASS = 2.;
 const static double FORCING_EFK = 1e-3;
 const static double PI = M_PI;
 
-double X[CCX]={}, Y[CCY]={}, Z[CCZ]={};
-double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={};
-double RHS[CCX][CCY][CCZ]={};
-double FF[3][CCX][CCY][CCZ]={};
-double Q[CCX][CCY][CCZ]={};
+
 
 const static int REAL = 0;
 const static int IMAG = 1;
 
 double MAX_CFL;
 
+double X[CCX]={}, Y[CCY]={}, Z[CCZ]={};
+double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={};
+double RHS[CCX][CCY][CCZ]={};
+double FF[3][CCX][CCY][CCZ]={};
+double Q[CCX][CCY][CCZ]={};
 double NUT[CCX][CCY][CCZ]={};
+
+void init_env() {
+    #pragma acc enter data copyin(U, UU, P, UP, RHS, FF, Q, NUT)
+}
+
+void finialize_env() {
+    #pragma acc exit data delete(U, UU, P, UP, RHS, FF, Q, NUT)
+}
 
 default_random_engine GEN;
 normal_distribution<double> GAUSS_DISTRIBUTION_A1(0., 1.);
@@ -153,7 +162,7 @@ double diffusion_core(double phi[CCX][CCY][CCZ], double nut[CCX][CCY][CCZ], int 
 
 void prediction() {
     for (int d = 0; d < 3; d ++) {
-        #pragma omp parallel for collapse(3)
+        #pragma acc kernels loop independent collapse(3) present(UP, UU, NUT, FF)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
@@ -165,25 +174,25 @@ void prediction() {
 }
 
 void interpolation() {
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, U)
     for (int i = GC-1; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[0][i][j][k] = .5*(U[0][i][j][k] + U[0][i+1][j][k]);
     }}}
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, U)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC-1; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[1][i][j][k] = .5*(U[1][i][j][k] + U[1][i][j+1][k]);
     }}}
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, U)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC-1; k < GC+CZ; k ++) {
         UU[2][i][j][k] = .5*(U[2][i][j][k] + U[2][i][j][k+1]);
     }}}
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, RHS)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -210,21 +219,21 @@ double sor_rb_core(double phi[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, 
 
 void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int margin) {
     for (int d = 0; d < dim; d ++) {
-        #pragma omp parallel for collapse(2)
+        #pragma acc kernels loop independent collapse(2) present(phi[:d][:CCX][:CCY][:CCZ])
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
         for (int offset = 0; offset < margin; offset ++) {
             phi[d][GC- 1-offset][j][k] = phi[d][GC+CX-1-offset][j][k];
             phi[d][GC+CX+offset][j][k] = phi[d][GC     +offset][j][k];
         }}}
-        #pragma omp parallel for collapse(2)
+        #pragma acc kernels loop independent collapse(2) present(phi[:d][:CCX][:CCY][:CCZ])
         for (int i = GC; i < GC+CX; i ++) {
         for (int k = GC; k < GC+CZ; k ++) {
         for (int offset = 0; offset < margin; offset ++) {
             phi[d][i][GC- 1-offset][k] = phi[d][i][GC+CY-1-offset][k];
             phi[d][i][GC+CY+offset][k] = phi[d][i][GC     +offset][k];
         }}}
-        #pragma omp parallel for collapse(2)
+        #pragma acc kernels loop independent collapse(2) present(phi[:d][:CCX][:CCY][:CCZ])
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int offset = 0; offset < margin; offset ++) {
@@ -238,14 +247,14 @@ void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int margin) {
 void ls_poisson() {
     for (SOR_ITER = 1; SOR_ITER <= SOR_MAXITER; SOR_ITER ++) {
         SOR_ERR = 0.;
-        #pragma omp parallel for reduction(+:SOR_ERR) collapse(3)
+        #pragma acc kernels loop independent reduction(+:SOR_ERR) collapse(3) present(P, RHS)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
             SOR_ERR += sor_rb_core(P, RHS, i, j, k, 0);
         }}}
         periodic_bc(&P, 1, 1);
-        #pragma omp parallel for reduction(+:SOR_ERR) collapse(3)
+        #pragma acc kernels loop independent reduction(+:SOR_ERR) collapse(3) present(P, RHS)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
@@ -261,14 +270,14 @@ void ls_poisson() {
 
 void pressure_centralize() {
     double sum = 0;
-    #pragma omp parallel for reduction(+:sum) collapse(3)
+    #pragma acc kernels loop independent reduction(+:sum) collapse(3) present(P)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
         sum += P[i][j][k];
     }}}
     double avg = sum / double(CX*CY*CZ);
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(P) copyin(avg)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -277,7 +286,7 @@ void pressure_centralize() {
 }
 
 void projection_center() {
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(U, P)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -288,26 +297,26 @@ void projection_center() {
 }
 
 void projection_interface() {
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, P)
     for (int i = GC-1; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[0][i][j][k] -= DT*DXI*(P[i+1][j][k] - P[i][j][k]);
     }}}
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, P)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC-1; j < GC+CY; j ++) {
     for (int k = GC  ; k < GC+CZ; k ++) {
         UU[1][i][j][k] -= DT*DYI*(P[i][j+1][k] - P[i][j][k]);
     }}}
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(UU, P)
     for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC  ; j < GC+CY; j ++) {
     for (int k = GC-1; k < GC+CZ; k ++) {
         UU[2][i][j][k] -= DT*DZI*(P[i][j][k+1] - P[i][j][k]);
     }}}
     RMS_DIV = 0;
-    #pragma omp parallel for reduction(+:RMS_DIV) collapse(3)
+    #pragma acc kernels loop independent reduction(+:RMS_DIV) collapse(3) present(UU)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -354,7 +363,7 @@ void turbulence_core(double u[CCX][CCY][CCZ], double v[CCX][CCY][CCZ], double w[
 }
 
 void turbulence() {
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(U, NUT)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -421,8 +430,9 @@ void generate_force() {
             kforce_core(ffk[0], ffk[1], ffk[2], i, j, k);
         }
     }}}
+    #pragma acc update self(ffk[:3][:NNX*NNY*NNZ])
     // printf("wavenumber space force generated\n");
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(FF, ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -450,7 +460,7 @@ void generate_force() {
 
 void turbulence_kinetic_energy() {
     double ksum = 0;
-    #pragma omp parallel for reduction(+:ksum) collapse(3)
+    #pragma acc kernels loop independent reduction(+:ksum) collapse(3) present(U)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -464,7 +474,7 @@ void turbulence_kinetic_energy() {
 
 void max_cfl() {
     MAX_CFL = 0;
-    #pragma omp parallel for reduction(max:MAX_CFL) collapse(3)
+    #pragma acc kernels loop independent reduction(max:MAX_CFL) collapse(3) present(U)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -479,7 +489,7 @@ void max_cfl() {
 }
 
 void calc_q() {
-    #pragma omp parallel for collapse(3)
+    #pragma acc kernels loop independent collapse(3) present(U, Q)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
@@ -519,6 +529,7 @@ void main_loop() {
 }
 
 void output_field(int n) {
+    #pragma acc update self(U, P, Q, FF)
     char fname[128];
     sprintf(fname, "force-field.csv.%d", n);
     FILE *file = fopen(fname, "w");
@@ -638,6 +649,9 @@ int main() {
     ffk[0] = fftw_alloc_complex(NNX*NNY*NNZ);
     ffk[1] = fftw_alloc_complex(NNX*NNY*NNZ);
     ffk[2] = fftw_alloc_complex(NNX*NNY*NNZ);
+
+    #pragma acc enter data copyin(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
+    init_env();
     
     make_grid();
 
@@ -651,6 +665,9 @@ int main() {
         }
     }
     printf("\n");
+
+    #pragma acc exit data delete(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
+    finialize_env();
 
     fftw_free(ffk[0]);
     fftw_free(ffk[1]);
