@@ -595,36 +595,6 @@ void output_force(double forcex[CCX][CCY][CCZ], double forcey[CCX][CCY][CCZ], do
     fclose(file);
 }
 
-// void generate_force() {
-//     for (int i = 0; i < CX; i ++) {
-//     for (int j = 0; j < CY; j ++) {
-//     for (int k = 0; k < CZ; k ++) {
-//         if (i + j + k == 0) {
-//             continue;
-//         }
-//         double k1 = i*2*PI/LX;
-//         double k2 = j*2*PI/LY;
-//         double k3 = k*2*PI/LZ;
-//         double kabs = sqrt(sq(k1) + sq(k2) + sq(k3));
-//         if (kabs <= LOW_PASS) {
-//             kforce_core(FFK[0], FFK[1], FFK[2], i, j, k);
-//             printf("%d %d %d\n", i, j, k);
-//         }
-//     }}}
-//     // scale_complex_seq(FFK[0], 1./(CX*CY*CZ), CX*CY*CZ);
-//     // scale_complex_seq(FFK[1], 1./(CX*CY*CZ), CX*CY*CZ);
-//     // scale_complex_seq(FFK[2], 1./(CX*CY*CZ), CX*CY*CZ);
-//     fftw_plan planx = fftw_plan_dft_3d(CX, CY, CZ, FFK[0], FFC[0], FFTW_BACKWARD, FFTW_ESTIMATE);
-//     fftw_plan plany = fftw_plan_dft_3d(CX, CY, CZ, FFK[1], FFC[1], FFTW_BACKWARD, FFTW_ESTIMATE);
-//     fftw_plan planz = fftw_plan_dft_3d(CX, CY, CZ, FFK[2], FFC[2], FFTW_BACKWARD, FFTW_ESTIMATE);
-//     fftw_execute(planx);
-//     fftw_execute(plany);
-//     fftw_execute(planz);
-//     fftw_destroy_plan(planx);
-//     fftw_destroy_plan(plany);
-//     fftw_destroy_plan(planz);
-// }
-
 void make_grid() {
     for (int i = 0; i < GC+CX; i ++) {
         X[i] = (i - GC + .5)*DX;
