@@ -5,7 +5,8 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "/usr/local/fftw/include",
-                "~/Workspace/eigen"
+                "~/Workspace/eigen",
+                "/opt/nvidia/hpc_sdk/Linux_x86_64/2024/cuda/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

@@ -3,16 +3,17 @@
 #include <fstream>
 #include <cstring>
 #include <math.h>
-#include <random>
 #include <cuda.h>
+#include <cuda_runtime.h>
+#include <random>
 
 typedef double complex[2];
 
 using namespace std;
 
-const static int    CX   = 32;
-const static int    CY   = 32;
-const static int    CZ   = 32;
+const static int    CX   = 64;
+const static int    CY   = 64;
+const static int    CZ   = 64;
 const static int    GC   = 3;
 const static int    CCX  = CX +2*GC;
 const static int    CCY  = CY +2*GC;
@@ -48,10 +49,11 @@ const static double C_SMAGORINSKY = 0.1;
 double              TURB_K;
 
 const static double LOW_PASS = 2.;
-const static double FORCING_EFK = 1e-3;
+const static double FORCING_EFK = 1e-2;
 const static double PI = M_PI;
 
-
+default_random_engine GEN;
+normal_distribution<double> GAUSS(0., 1.);
 
 const static int REAL = 0;
 const static int IMAG = 1;
@@ -72,14 +74,6 @@ void init_env() {
 void finialize_env() {
     #pragma acc exit data delete(U, UU, P, UP, RHS, FF, Q, NUT)
 }
-
-default_random_engine GEN;
-normal_distribution<double> GAUSS_DISTRIBUTION_A1(0., 1.);
-normal_distribution<double> GAUSS_DISTRIBUTION_A2(0., 1.);
-normal_distribution<double> GAUSS_DISTRIBUTION_A3(0., 1.);
-normal_distribution<double> GAUSS_DISTRIBUTION_B1(0., 1.);
-normal_distribution<double> GAUSS_DISTRIBUTION_B2(0., 1.);
-normal_distribution<double> GAUSS_DISTRIBUTION_B3(0., 1.);
 
 inline int CIDX(int i, int j, int k) {
     return i*CY*CZ + j*CZ + k;
@@ -164,7 +158,7 @@ double diffusion_core(double phi[CCX][CCY][CCZ], double nut[CCX][CCY][CCZ], int 
 
 void prediction() {
     for (int d = 0; d < 3; d ++) {
-        #pragma acc kernels loop independent collapse(3) present(UP, UU, NUT, FF)
+        #pragma acc kernels loop independent collapse(3) present(U, UP, UU, NUT, FF)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
@@ -221,21 +215,21 @@ double sor_rb_core(double phi[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, 
 
 void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int margin) {
     for (int d = 0; d < dim; d ++) {
-        #pragma acc kernels loop independent collapse(2) present(phi[:d][:CCX][:CCY][:CCZ])
+        #pragma acc kernels loop independent collapse(2) present(phi[:dim][:CCX][:CCY][:CCZ])
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
         for (int offset = 0; offset < margin; offset ++) {
             phi[d][GC- 1-offset][j][k] = phi[d][GC+CX-1-offset][j][k];
             phi[d][GC+CX+offset][j][k] = phi[d][GC     +offset][j][k];
         }}}
-        #pragma acc kernels loop independent collapse(2) present(phi[:d][:CCX][:CCY][:CCZ])
+        #pragma acc kernels loop independent collapse(2) present(phi[:dim][:CCX][:CCY][:CCZ])
         for (int i = GC; i < GC+CX; i ++) {
         for (int k = GC; k < GC+CZ; k ++) {
         for (int offset = 0; offset < margin; offset ++) {
             phi[d][i][GC- 1-offset][k] = phi[d][i][GC+CY-1-offset][k];
             phi[d][i][GC+CY+offset][k] = phi[d][i][GC     +offset][k];
         }}}
-        #pragma acc kernels loop independent collapse(2) present(phi[:d][:CCX][:CCY][:CCZ])
+        #pragma acc kernels loop independent collapse(2) present(phi[:dim][:CCX][:CCY][:CCZ])
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int offset = 0; offset < margin; offset ++) {
@@ -375,9 +369,7 @@ void turbulence() {
 
 int NNX, NNY, NNZ;
 
-int nnidx(int i, int j, int k) {
-    return i*NNY*NNZ + j*NNZ + k;
-}
+#define nnidx(i,j,k) (i)*NNY*NNZ+(j)*NNZ+(k)
 
 
 complex *ffk[3];
@@ -396,12 +388,12 @@ void kforce_core(complex forcek1[CX*CY*CZ], complex forcek2[CX*CY*CZ], complex f
     k1 = i*2*PI/LX;
     k2 = j*2*PI/LY;
     k3 = k*2*PI/LZ;
-    a1 = GAUSS_DISTRIBUTION_A1(GEN);
-    a2 = GAUSS_DISTRIBUTION_A2(GEN);
-    a3 = GAUSS_DISTRIBUTION_A3(GEN);
-    b1 = GAUSS_DISTRIBUTION_B1(GEN);
-    b2 = GAUSS_DISTRIBUTION_B2(GEN);
-    b3 = GAUSS_DISTRIBUTION_B3(GEN);
+    a1 = GAUSS(GEN);
+    a2 = GAUSS(GEN);
+    a3 = GAUSS(GEN);
+    b1 = GAUSS(GEN);
+    b2 = GAUSS(GEN);
+    b3 = GAUSS(GEN);
     double kabs = sqrt(sq(k1) + sq(k2) + sq(k3));
     double Cf = sqrt(FORCING_EFK/(16*PI*sq(sq(kabs))*DT));
     forcek1[nnidx(i,j,k)][REAL] = Cf*(k2*a3 - k3*a2);
@@ -413,7 +405,7 @@ void kforce_core(complex forcek1[CX*CY*CZ], complex forcek2[CX*CY*CZ], complex f
 }
 
 void scale_complex_seq(complex *seq, double scale, int size) {
-    #pragma omp parallel for
+    #pragma acc kernels loop independent present(seq[:size]) copyin(scale)
     for (int i = 0; i < size; i ++) {
         seq[i][REAL] *= scale;
         seq[i][IMAG] *= scale;
@@ -432,7 +424,7 @@ void generate_force() {
             kforce_core(ffk[0], ffk[1], ffk[2], i, j, k);
         }
     }}}
-    #pragma acc update self(ffk[:3][:NNX*NNY*NNZ])
+    #pragma acc update device(ffk[:3][:NNX*NNY*NNZ])
     // printf("wavenumber space force generated\n");
     #pragma acc kernels loop independent collapse(3) present(FF, ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     for (int i = GC; i < GC+CX; i ++) {
@@ -509,7 +501,9 @@ void calc_q() {
 }
 
 void main_loop() {
-    memcpy(&UP[0][0][0][0], &U[0][0][0][0], sizeof(double)*3*CCX*CCY*CCZ);
+    // memcpy(&UP[0][0][0][0], &U[0][0][0][0], sizeof(double)*3*CCX*CCY*CCZ);
+    #pragma acc host_data use_device(U, UP)
+    cudaMemcpy(&UP[0][0][0][0], &U[0][0][0][0], sizeof(double)*3*CCX*CCY*CCZ, cudaMemcpyDeviceToDevice);
     generate_force();
     prediction();
     periodic_bc(U, 3, 2);
@@ -531,15 +525,15 @@ void main_loop() {
 }
 
 void output_field(int n) {
-    #pragma acc update self(U, P, Q, FF)
+    #pragma acc update self(U, P, Q)
     char fname[128];
     sprintf(fname, "force-field.csv.%d", n);
     FILE *file = fopen(fname, "w");
-    fprintf(file, "x,y,z,u,v,w,p,q,fx,fy,fz\n");
+    fprintf(file, "x,y,z,u,v,w,p,q\n");
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
-        fprintf(file, "%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k], FF[0][i][j][k], FF[1][i][j][k], FF[2][i][j][k]);
+        fprintf(file, "%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k]);
     }}}
     fclose(file);
 }
@@ -632,7 +626,9 @@ int main() {
         printf("\r%9d, %12.5lf, %3d, %15e, %15e, %15e, %15e", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K, MAX_CFL);
         fflush(stdout);
         if (ISTEP%int(1./DT) == 0) {
-            output_field(ISTEP/int(1./DT));
+            if (ISTEP >= int(100./DT)) {
+                output_field(ISTEP/int(1./DT));
+            }
             printf("\n");
         }
     }

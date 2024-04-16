@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cstring>
 #include <math.h>
+#include <cuda_runtime.h>
 
 #define PI M_PI
 
@@ -27,6 +28,11 @@ int main() {
     #pragma acc enter data copyin(carr)
     init_complex_array(carr);
     #pragma acc update self(carr)
+    for (int i = 0; i < N; i ++) {
+        printf("%6.3lf %6.3lf\n", carr[i][REAL], carr[i][IMAG]);
+    }
+    cudaMemcpy(&carr[0], &carr[1], sizeof(complex), cudaMemcpyHostToHost);
+    printf("\n");
     for (int i = 0; i < N; i ++) {
         printf("%6.3lf %6.3lf\n", carr[i][REAL], carr[i][IMAG]);
     }
