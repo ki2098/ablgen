@@ -42,13 +42,17 @@ const static int    SOR_MAXITER = 1000;
 const static double SOR_EPS     = 1e-6;
 double              SOR_ERR;
 int                 ISTEP;
-int                 MAXSTEP     = int(200./DT);
+const static double MAXT        = 300.;
+const static double STATIC_START = 150.;
+const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
 
 const static double C_SMAGORINSKY = 0.1;
 double              TURB_K;
+double              TURB_K_TAVG = 0.;
 double              TURB_I;
 int                 TAVG_NSTEP = 0;
+int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
 const static double FORCING_EFK = 1e-2;
@@ -511,7 +515,6 @@ void time_accumulate() {
         UAVG[1][i][j][k] += U[1][i][j][k];
         UAVG[2][i][j][k] += U[2][i][j][k];
     }}}
-    TAVG_NSTEP ++;
 }
 
 void turbulence_kinetic_energy() {
@@ -529,6 +532,10 @@ void turbulence_kinetic_energy() {
         TURB_K += .5*(sq(uper) + sq(vper) + sq(wper));
     }}}
     TURB_K /= (CX*CY*CZ);
+    if (ISTEP >= int(STATIC_START/DT)) {
+        TURB_K_TAVG += TURB_K;
+        STATIC_NSTEP ++;
+    }
 }
 
 void main_loop() {
@@ -550,8 +557,10 @@ void main_loop() {
     // turbulence();
     periodic_bc(&NUT, 1, 1);
 
+    TAVG_NSTEP ++;
     time_accumulate();
     turbulence_kinetic_energy();
+    
     calc_q();
     max_cfl();
 }
@@ -655,16 +664,18 @@ int main() {
 
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("\r%9d, %12.5lf, %3d, %15e, %15e, %15e, %15e", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K, MAX_CFL);
+        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K, TURB_K_TAVG/STATIC_NSTEP, MAX_CFL);
         fflush(stdout);
         if (ISTEP%int(1./DT) == 0) {
-            if (ISTEP >= int(100./DT)) {
+            if (ISTEP >= int(STATIC_START/DT)) {
                 output_field(ISTEP/int(1./DT));
             }
             printf("\n");
         }
     }
     printf("\n");
+    TURB_K_TAVG /= STATIC_NSTEP;
+    printf("time space average turbulence k=%e\n", TURB_K_TAVG);
 
     #pragma acc exit data delete(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     finialize_env();
