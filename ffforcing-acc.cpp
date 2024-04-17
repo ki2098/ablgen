@@ -47,6 +47,8 @@ double              RMS_DIV;
 
 const static double C_SMAGORINSKY = 0.1;
 double              TURB_K;
+double              TURB_I;
+int                 TAVG_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
 const static double FORCING_EFK = 1e-2;
@@ -61,18 +63,18 @@ const static int IMAG = 1;
 double MAX_CFL;
 
 double X[CCX]={}, Y[CCY]={}, Z[CCZ]={};
-double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={};
+double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={}, UAVG[3][CCX][CCY][CCZ];
 double RHS[CCX][CCY][CCZ]={};
 double FF[3][CCX][CCY][CCZ]={};
 double Q[CCX][CCY][CCZ]={};
 double NUT[CCX][CCY][CCZ]={};
 
 void init_env() {
-    #pragma acc enter data copyin(U, UU, P, UP, RHS, FF, Q, NUT)
+    #pragma acc enter data copyin(U, UU, P, UP, UAVG, RHS, FF, Q, NUT)
 }
 
 void finialize_env() {
-    #pragma acc exit data delete(U, UU, P, UP, RHS, FF, Q, NUT)
+    #pragma acc exit data delete(U, UU, P, UP, UAVG, RHS, FF, Q, NUT)
 }
 
 inline int CIDX(int i, int j, int k) {
@@ -452,19 +454,19 @@ void generate_force() {
     // printf("physical space force generated\n");
 }
 
-void turbulence_kinetic_energy() {
-    double ksum = 0;
-    #pragma acc kernels loop independent reduction(+:ksum) collapse(3) present(U)
-    for (int i = GC; i < GC+CX; i ++) {
-    for (int j = GC; j < GC+CY; j ++) {
-    for (int k = GC; k < GC+CZ; k ++) {
-        double u = U[0][i][j][k];
-        double v = U[1][i][j][k];
-        double w = U[2][i][j][k];
-        ksum += .5*sqrt(sq(u) + sq(v) + sq(w));
-    }}}
-    TURB_K = ksum / (CX*CY*CZ);
-}
+// void turbulence_kinetic_energy() {
+//     double ksum = 0;
+//     #pragma acc kernels loop independent reduction(+:ksum) collapse(3) present(U)
+//     for (int i = GC; i < GC+CX; i ++) {
+//     for (int j = GC; j < GC+CY; j ++) {
+//     for (int k = GC; k < GC+CZ; k ++) {
+//         double u = U[0][i][j][k];
+//         double v = U[1][i][j][k];
+//         double w = U[2][i][j][k];
+//         ksum += .5*sqrt(sq(u) + sq(v) + sq(w));
+//     }}}
+//     TURB_K = ksum / (CX*CY*CZ);
+// }
 
 void max_cfl() {
     MAX_CFL = 0;
@@ -500,6 +502,35 @@ void calc_q() {
     }}}
 }
 
+void time_accumulate() {
+    #pragma acc kernels loop independent collapse(3) present(U, UAVG)
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+    for (int k = 0; k < CCZ; k ++) {
+        UAVG[0][i][j][k] += U[0][i][j][k];
+        UAVG[1][i][j][k] += U[1][i][j][k];
+        UAVG[2][i][j][k] += U[2][i][j][k];
+    }}}
+    TAVG_NSTEP ++;
+}
+
+void turbulence_kinetic_energy() {
+    TURB_K = 0;
+    #pragma acc kernels loop independent reduction(+:TURB_K) collapse(3) present(U, UAVG) copyin(TAVG_NSTEP)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        double uavg = UAVG[0][i][j][k] / TAVG_NSTEP;
+        double vavg = UAVG[1][i][j][k] / TAVG_NSTEP;
+        double wavg = UAVG[2][i][j][k] / TAVG_NSTEP;
+        double uper = U[0][i][j][k] - uavg;
+        double vper = U[1][i][j][k] - vavg;
+        double wper = U[2][i][j][k] - wavg;
+        TURB_K += .5*(sq(uper) + sq(vper) + sq(wper));
+    }}}
+    TURB_K /= (CX*CY*CZ);
+}
+
 void main_loop() {
     // memcpy(&UP[0][0][0][0], &U[0][0][0][0], sizeof(double)*3*CCX*CCY*CCZ);
     #pragma acc host_data use_device(U, UP)
@@ -519,6 +550,7 @@ void main_loop() {
     // turbulence();
     periodic_bc(&NUT, 1, 1);
 
+    time_accumulate();
     turbulence_kinetic_energy();
     calc_q();
     max_cfl();
