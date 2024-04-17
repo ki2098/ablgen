@@ -10,6 +10,7 @@
 typedef double complex[2];
 
 using namespace std;
+const static double PI = M_PI;
 
 const static int    CX   = 64;
 const static int    CY   = 64;
@@ -56,7 +57,6 @@ int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
 const static double FORCING_EFK = 1e-3;
-const static double PI = M_PI;
 
 default_random_engine GEN;
 normal_distribution<double> GAUSS(0., 1.);
