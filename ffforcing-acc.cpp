@@ -55,7 +55,7 @@ int                 TAVG_NSTEP = 0;
 int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
-const static double FORCING_EFK = 1e-2;
+const static double FORCING_EFK = 1e-3;
 const static double PI = M_PI;
 
 default_random_engine GEN;
@@ -668,7 +668,7 @@ int main() {
         fflush(stdout);
         if (ISTEP%int(1./DT) == 0) {
             if (ISTEP >= int(STATIC_START/DT)) {
-                output_field(ISTEP/int(1./DT));
+                // output_field(ISTEP/int(1./DT));
             }
             printf("\n");
         }
