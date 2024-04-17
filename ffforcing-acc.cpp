@@ -568,7 +568,7 @@ void main_loop() {
 void output_field(int n) {
     #pragma acc update self(U, P, Q)
     char fname[128];
-    sprintf(fname, "force-field.csv.%d", n);
+    sprintf(fname, "data/force-field.csv.%d", n);
     FILE *file = fopen(fname, "w");
     fprintf(file, "x,y,z,u,v,w,p,q\n");
     for (int i = GC; i < GC+CX; i ++) {
@@ -580,7 +580,7 @@ void output_field(int n) {
 }
 
 void output_kspace_force(complex forcex[CX*CY*CZ], complex forcey[CX*CY*CZ], complex forcez[CX*CY*CZ]) {
-    FILE *file = fopen("force-k.csv", "w");
+    FILE *file = fopen("data/force-k.csv", "w");
     fprintf(file, "i,j,k,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
     double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
     for (int k = 0; k < NNX; k ++) {
@@ -601,7 +601,7 @@ void output_kspace_force(complex forcex[CX*CY*CZ], complex forcey[CX*CY*CZ], com
 }
 
 void output_complex_force(complex forcex[CX*CY*CZ], complex forcey[CX*CY*CZ], complex forcez[CX*CY*CZ]) {
-    FILE *file = fopen("force-complex.csv", "w");
+    FILE *file = fopen("data/force-complex.csv", "w");
     fprintf(file, "x,y,z,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
     double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
     for (int k = 0; k < CZ; k ++) {
@@ -622,7 +622,7 @@ void output_complex_force(complex forcex[CX*CY*CZ], complex forcey[CX*CY*CZ], co
 }
 
 void output_force(double forcex[CCX][CCY][CCZ], double forcey[CCX][CCY][CCZ], double forcez[CCX][CCY][CCZ]) {
-    FILE *file = fopen("force.csv", "w");
+    FILE *file = fopen("data/force.csv", "w");
     fprintf(file, "x,y,z,fx,fy,fz\n");
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
