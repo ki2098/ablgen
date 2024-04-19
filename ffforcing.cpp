@@ -362,10 +362,10 @@ void turbulence() {
     }}}
 }
 
-int NNX, NNY, NNZ;
+int NKX, NKY, NKZ;
 
 int nnidx(int i, int j, int k) {
-    return i*NNY*NNZ + j*NNZ + k;
+    return i*NKY*NKZ + j*NKZ + k;
 }
 
 
@@ -410,9 +410,9 @@ void scale_complex_seq(fftw_complex *seq, double scale, int size) {
 }
 
 void generate_force() {
-    for (int i = 0; i < NNX; i ++) {
-    for (int j = 0; j < NNY; j ++) {
-    for (int k = 0; k < NNZ; k ++) {
+    for (int i = 0; i < NKX; i ++) {
+    for (int j = 0; j < NKY; j ++) {
+    for (int k = 0; k < NKZ; k ++) {
         double k1 = i*2*PI/LX;
         double k2 = j*2*PI/LY;
         double k3 = k*2*PI/LZ;
@@ -432,9 +432,9 @@ void generate_force() {
         int I1 = i - GC;
         int I2 = j - GC;
         int I3 = k - GC;
-        for (int K1 = 0; K1 < NNX; K1 ++) {
-        for (int K2 = 0; K2 < NNY; K2 ++) {
-        for (int K3 = 0; K3 < NNZ; K3 ++) {
+        for (int K1 = 0; K1 < NKX; K1 ++) {
+        for (int K2 = 0; K2 < NKY; K2 ++) {
+        for (int K3 = 0; K3 < NKZ; K3 ++) {
             double th1 = - 2.*PI*I1*K1/double(CX);
             double th2 = - 2.*PI*I2*K2/double(CY);
             double th3 = - 2.*PI*I3*K3/double(CZ);
@@ -535,9 +535,9 @@ void output_kspace_force(fftw_complex forcex[CX*CY*CZ], fftw_complex forcey[CX*C
     FILE *file = fopen("force-k.csv", "w");
     fprintf(file, "i,j,k,fx_real,fx_image,fx_mag,fy_real,fy_image,fy_mag,fz_real,fz_image,fz_mag\n");
     double fxr, fxi, fxm, fyr, fyi, fym, fzr, fzi, fzm;
-    for (int k = 0; k < NNX; k ++) {
-    for (int j = 0; j < NNY; j ++) {
-    for (int i = 0; i < NNZ; i ++) {
+    for (int k = 0; k < NKX; k ++) {
+    for (int j = 0; j < NKY; j ++) {
+    for (int i = 0; i < NKZ; i ++) {
         fxr = forcex[nnidx(i,j,k)][REAL];
         fxi = forcex[nnidx(i,j,k)][IMAG];
         fyr = forcey[nnidx(i,j,k)][REAL];
@@ -630,14 +630,14 @@ int main() {
     const int MAX_NX = int(LOW_PASS*LX/(2*PI));
     const int MAX_NY = int(LOW_PASS*LY/(2*PI));
     const int MAX_NZ = int(LOW_PASS*LZ/(2*PI));
-    NNX = MAX_NX + 1;
-    NNY = MAX_NY + 1;
-    NNZ = MAX_NZ + 1;
-    printf("filtered wavenumber space %dx%dx%d\n", NNX, NNY, NNZ);
+    NKX = MAX_NX + 1;
+    NKY = MAX_NY + 1;
+    NKZ = MAX_NZ + 1;
+    printf("filtered wavenumber space %dx%dx%d\n", NKX, NKY, NKZ);
 
-    ffk[0] = fftw_alloc_complex(NNX*NNY*NNZ);
-    ffk[1] = fftw_alloc_complex(NNX*NNY*NNZ);
-    ffk[2] = fftw_alloc_complex(NNX*NNY*NNZ);
+    ffk[0] = fftw_alloc_complex(NKX*NKY*NKZ);
+    ffk[1] = fftw_alloc_complex(NKX*NKY*NKZ);
+    ffk[2] = fftw_alloc_complex(NKX*NKY*NKZ);
     
     make_grid();
 
