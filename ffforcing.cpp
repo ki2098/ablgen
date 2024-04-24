@@ -34,10 +34,10 @@ const static double RE   = 1e4;
 const static double REI  = 1./RE;
 
 const static double SOR_OMEGA   = 1.2;
-int                 SOR_ITER;
-const static int    SOR_MAXITER = 1000;
-const static double SOR_EPS     = 1e-6;
-double              SOR_ERR;
+int                 LS_ITER;
+const static int    LS_MAXITER = 1000;
+const static double LS_EPS     = 1e-6;
+double              LS_ERR;
 int                 ISTEP;
 int                 MAXSTEP     = int(200./DT);
 double              RMS_DIV;
@@ -236,24 +236,24 @@ void periodic_bc(double (*phi)[CCX][CCY][CCZ], int dim, int margin) {
 }
 
 void ls_poisson() {
-    for (SOR_ITER = 1; SOR_ITER <= SOR_MAXITER; SOR_ITER ++) {
-        SOR_ERR = 0.;
+    for (LS_ITER = 1; LS_ITER <= LS_MAXITER; LS_ITER ++) {
+        LS_ERR = 0.;
         #pragma omp parallel for reduction(+:SOR_ERR) collapse(3)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
-            SOR_ERR += sor_rb_core(P, RHS, i, j, k, 0);
+            LS_ERR += sor_rb_core(P, RHS, i, j, k, 0);
         }}}
         periodic_bc(&P, 1, 1);
         #pragma omp parallel for reduction(+:SOR_ERR) collapse(3)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
         for (int k = GC; k < GC+CZ; k ++) {
-            SOR_ERR += sor_rb_core(P, RHS, i, j, k, 1);
+            LS_ERR += sor_rb_core(P, RHS, i, j, k, 1);
         }}}
         periodic_bc(&P, 1, 1);
-        SOR_ERR = sqrt(SOR_ERR / (CX*CY*CZ));
-        if (SOR_ERR < SOR_EPS) {
+        LS_ERR = sqrt(LS_ERR / (CX*CY*CZ));
+        if (LS_ERR < LS_EPS) {
             break;
         }
     }
@@ -643,7 +643,7 @@ int main() {
 
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("\r%9d, %12.5lf, %3d, %15e, %15e, %15e, %15e", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K, MAX_CFL);
+        printf("\r%9d, %12.5lf, %3d, %15e, %15e, %15e, %15e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, MAX_CFL);
         fflush(stdout);
         if (ISTEP%int(1./DT) == 0) {
             output_field(ISTEP/int(1./DT));

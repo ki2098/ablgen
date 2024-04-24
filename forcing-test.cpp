@@ -22,23 +22,23 @@ const static double DXI = 1./DX;
 const static double DYI = 1./DY;
 const static double DDXI = 1./DDX;
 const static double DDYI = 1./DDY;
-const static double DT = 1e-4;
+const static double DT = 1e-3;
 const static double DTI = 1./DT;
 
 const static double RE = 1e4;
 const static double REI = 1./RE;
-const static double SOR_OMEGA = 1.2;
-int SOR_ITER;
-const static int SOR_MAXITER = 1000;
-const static double SOR_EPS = 1e-6;
-double SOR_ERR;
+const static double SOR_OMEGA = 1.0;
+int LS_ITER;
+const static int LS_MAXITER = 1000;
+const static double LS_EPS = 1e-6;
+double LS_ERR;
 int ISTEP;
 int MAXSTEP = int(100./DT);
 double RMS_DIV;
 
 const static double UTSAVG = 0.0;
 const static double VTSAVG = 0.0;
-const static double FORCING_EPS = 0.01;
+const static double FORCING_EPS = 1e-3;
 double TURB_INTEN;
 double TURB_K;
 
@@ -128,7 +128,7 @@ void interpolation() {
     #pragma omp parallel for collapse(2)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
-        RHS[i][j] = - DTI*(DXI*(UU[0][i][j] - UU[0][i-1][j]) + DYI*(UU[1][i][j] - UU[1][i][j-1]));
+        RHS[i][j] = DTI*(DXI*(UU[0][i][j] - UU[0][i-1][j]) + DYI*(UU[1][i][j] - UU[1][i][j-1]));
     }}
 }
 
@@ -141,10 +141,9 @@ double sor_serial_core(double phi[CCX][CCY], double rhs[CCX][CCY], int i, int j)
 
 double sor_rb_core(double phi[CCX][CCY], double rhs[CCX][CCY], int i, int j, int color) {
     if ((i + j)%2 == color) {
-        double phiage = (phi[i+1][j] + phi[i-1][j])*DDXI + (phi[i][j+1] + phi[i][j-1])*DDYI + rhs[i][j];
-        double dphi = 0.5*phiage/(DDXI + DDYI) - phi[i][j];
-        phi[i][j] += SOR_OMEGA*dphi;
-        return sq(dphi);
+        double cc = (rhs[i][j] - (DDXI*(phi[i+1][j] - 2*phi[i][j] + phi[i-1][j]) + DDYI*(phi[i][j+1] - 2*phi[i][j] + phi[i][j-1])))/(- 2*DDXI - 2*DDYI);
+        phi[i][j] += SOR_OMEGA*cc;
+        return sq(cc);
     } else {
         return 0;
     }
@@ -162,22 +161,22 @@ void pressure_bc() {
 }
 
 void ls_poisson() {
-    for(SOR_ITER = 1; SOR_ITER <= SOR_MAXITER; SOR_ITER ++) {
-        SOR_ERR = 0;
-        #pragma omp parallel for reduction(+:SOR_ERR) collapse(2)
+    for(LS_ITER = 1; LS_ITER <= LS_MAXITER; LS_ITER ++) {
+        LS_ERR = 0;
+        #pragma omp parallel for reduction(+:LS_ERR) collapse(2)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
-            SOR_ERR += sor_rb_core(P, RHS, i, j, 0);
+            LS_ERR += sor_rb_core(P, RHS, i, j, 0);
         }}
         pressure_bc();
-        #pragma omp parallel for reduction(+:SOR_ERR) collapse(2)
+        #pragma omp parallel for reduction(+:LS_ERR) collapse(2)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
-            SOR_ERR += sor_rb_core(P, RHS, i, j, 1);
+            LS_ERR += sor_rb_core(P, RHS, i, j, 1);
         }}
         pressure_bc();
-        SOR_ERR = sqrt(SOR_ERR/(CX*CY));
-        if (SOR_ERR < SOR_EPS) {
+        LS_ERR = sqrt(LS_ERR/(CX*CY));
+        if (LS_ERR < LS_EPS) {
             return;
         }
     }
@@ -379,7 +378,7 @@ void init_velocity() {
 
 void output(int count) {
     char filename[128];
-    sprintf(filename, "forcing-test.csv.%d", count);
+    sprintf(filename, "data/forcing-test.csv.%d", count);
     FILE *file = fopen(filename, "w");
     fprintf(file, "x,y,z,u,v,w,p\n");
     for (int j = GC; j < GC+CX; j ++) {
@@ -395,7 +394,7 @@ int main() {
     output(0);
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("%9d, %15lf, %3d, %15e, %15e, %15e\n", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K);
+        printf("\r%9d, %15lf, %3d, %15e, %15e, %15e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K);
         fflush(stdout);
         if (ISTEP % int(1./DT) == 0) {
             output(ISTEP / int(1./DT));

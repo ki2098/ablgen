@@ -45,10 +45,10 @@ const static double RE          = 1e4;
 const static double REI         = 1./RE;
 const static double UINLET      = 1.;
 const static double SOR_OMEGA   = 1.2;
-int                 SOR_ITER;
-const static int    SOR_MAXITER = 1000;
-const static double SOR_EPS     = 1e-6;
-double              SOR_ERR;
+int                 LS_ITER;
+const static int    LS_MAXITER = 1000;
+const static double LS_EPS     = 1e-6;
+double              LS_ERR;
 int                 ISTEP;
 const static double MAXT        = 5e-2;
 const static int    MAXSTEP     = int(MAXT/DT);
@@ -74,7 +74,7 @@ void init_env() {
     #pragma acc enter data copyin(U, UU, P, UP, UAVG, RHS, FF, Q, NUT)
 }
 
-void finialize_env() {
+void finalize_env() {
     #pragma acc exit data delete(U, UU, P, UP, UAVG, RHS, FF, Q, NUT)
 }
 
@@ -202,22 +202,22 @@ double sor_rb_core(double phi[GGX][GGY][GGZ], double rhs[GGX][GGY][GGZ], int i, 
 }
 
 void ls_poisson() {
-    for (SOR_ITER = 1; SOR_ITER <= SOR_MAXITER; SOR_ITER ++) {
-        SOR_ERR = 0.;
+    for (LS_ITER = 1; LS_ITER <= LS_MAXITER; LS_ITER ++) {
+        LS_ERR = 0.;
         #pragma acc kernels loop independent reduction(+:SOR_ERR) collapse(3) present(P, RHS)
         for (int i = GP; i < GP+GX; i ++) {
         for (int j = GP; j < GP+GY; j ++) {
         for (int k = GP; k < GP+GZ; k ++) {
-            SOR_ERR += sor_rb_core(P, RHS, i, j, k, 0);
+            LS_ERR += sor_rb_core(P, RHS, i, j, k, 0);
         }}}
         #pragma acc kernels loop independent reduction(+:SOR_ERR) collapse(3) present(P, RHS)
         for (int i = GP; i < GP+GX; i ++) {
         for (int j = GP; j < GP+GY; j ++) {
         for (int k = GP; k < GP+GZ; k ++) {
-            SOR_ERR += sor_rb_core(P, RHS, i, j, k, 1);
+            LS_ERR += sor_rb_core(P, RHS, i, j, k, 1);
         }}}
-        SOR_ERR = sqrt(SOR_ERR / (GX*GY*GZ));
-        if (SOR_ERR < SOR_EPS) {
+        LS_ERR = sqrt(LS_ERR / (GX*GY*GZ));
+        if (LS_ERR < LS_EPS) {
             break;
         }
     }
@@ -559,11 +559,11 @@ int main() {
 
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), SOR_ITER, SOR_ERR, RMS_DIV, TURB_K, MAX_CFL);
+        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, MAX_CFL);
         fflush(stdout);
     }
     output_field(ISTEP/int(1./DT));
 
-    finialize_env();
+    finalize_env();
     #pragma acc exit data delete(ffk[:3][:NKX*NKY*NKZ], NKX, NKY, NKZ)
 }

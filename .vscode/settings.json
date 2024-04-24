@@ -73,6 +73,7 @@
         "typeindex": "cpp",
         "typeinfo": "cpp",
         "variant": "cpp",
-        "mprealsupport": "cpp"
+        "mprealsupport": "cpp",
+        "__locale": "cpp"
     }
 }
