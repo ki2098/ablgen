@@ -15,9 +15,9 @@ const static int REAL = 0;
 const static int IMAG = 1;
 
 const static double PI   = M_PI;
-const static int    NX   = 100;
-const static int    NY   = 50;
-const static int    NZ   = 50;
+const static int    NX   = 200;
+const static int    NY   = 100;
+const static int    NZ   = 100;
 const static int    GC   = 3;
 const static int    CX   = NX - 1;
 const static int    CY   = NY - 1;
@@ -51,7 +51,7 @@ const static double SOR_OMEGA   = 1.2;
 double              MAXDIAGI   = 1.;
 int                 LS_ITER;
 const static int    LS_MAXITER = 1000;
-const static double LS_EPS     = 1e-6;
+const static double LS_EPS     = 1e-3;
 double              LS_ERR;
 int                 ISTEP;
 const static double MAXT        = 10.;
@@ -61,14 +61,14 @@ double              RMS_DIV;
 const static double C_SMAGORINSKY = 0.1;
 double              TURB_K;
 const static double FORCING_EPS   = 1e-2;
-const static double FORCING_EFK   = 1e-3;
+const static double FORCING_EFK   = 1e-6;
 const static double LOW_PASS      = 2.;
 
 random_device RD;
 default_random_engine GEN(RD());
 normal_distribution<double> GAUSS(0., 1.);
 
-const static int NFPY = 10, NFPZ=10;
+const static int NFPY = 3, NFPZ=3;
 const static double XFP = 1.;
 double fpposition[3][NFPY][NFPZ];
 double fpforce[3][NFPY][NFPZ];
@@ -90,6 +90,7 @@ void finalize_env() {
 }
 
 struct PBiCGStab {
+    double   xp[CCX][CCY][CCZ]={};
     double    r[CCX][CCY][CCZ]={};
     double   rr[CCX][CCY][CCZ]={};
     double    p[CCX][CCY][CCZ]={};
@@ -100,11 +101,11 @@ struct PBiCGStab {
     double    t[CCX][CCY][CCZ]={};
 
     void init() {
-        #pragma acc enter data copyin(this[0:1], r, rr, p, q, s, pp, ss, t)
+        #pragma acc enter data copyin(this[0:1], xp, r, rr, p, q, s, pp, ss, t)
     }
 
     void finalize() {
-        #pragma acc exit data delete(this[0:1], r, rr, p, q, s, pp, ss, t)
+        #pragma acc exit data delete(this[0:1], xp, r, rr, p, q, s, pp, ss, t)
     }
 } pcg;
 
@@ -192,21 +193,21 @@ void prediction() {
 
 void interpolation(double max_diag_inverse) {
     #pragma acc parallel loop independent collapse(3) present(UU, U)
-    for (int i = GC; i < GC+CX-1; i ++) {
-    for (int j = GC; j < GC+CY  ; j ++) {
-    for (int k = GC; k < GC+CZ  ; k ++) {
+    for (int i = GC-1; i < GC+CX; i ++) {
+    for (int j = GC  ; j < GC+CY; j ++) {
+    for (int k = GC  ; k < GC+CZ; k ++) {
         UU[0][i][j][k] = .5*(U[0][i][j][k] + U[0][i+1][j][k]);
     }}}
     #pragma acc parallel loop independent collapse(3) present(UU, U)
-    for (int i = GC; i < GC+CX  ; i ++) {
-    for (int j = GC; j < GC+CY-1; j ++) {
-    for (int k = GC; k < GC+CZ  ; k ++) {
+    for (int i = GC  ; i < GC+CX; i ++) {
+    for (int j = GC-1; j < GC+CY; j ++) {
+    for (int k = GC  ; k < GC+CZ; k ++) {
         UU[1][i][j][k] = .5*(U[1][i][j][k] + U[1][i][j+1][k]);
     }}}
     #pragma acc parallel loop independent collapse(3) present(UU, U)
-    for (int i = GC; i < GC+CX  ; i ++) {
-    for (int j = GC; j < GC+CY  ; j ++) {
-    for (int k = GC; k < GC+CZ-1; k ++) {
+    for (int i = GC  ; i < GC+CX; i ++) {
+    for (int j = GC  ; j < GC+CY; j ++) {
+    for (int k = GC-1; k < GC+CZ; k ++) {
         UU[2][i][j][k] = .5*(U[2][i][j][k] + U[2][i][j][k+1]);
     }}}
     #pragma acc parallel loop independent collapse(3) present(UU, RHS) firstprivate(max_diag_inverse)
@@ -334,6 +335,47 @@ double calc_norm2sqr(double vec[CCX][CCY][CCZ]) {
     return sum;
 }
 
+double jacobi_core(double a[7][CCX][CCY][CCZ], double x[CCX][CCY][CCZ], double xp[CCX][CCY][CCZ], double b[CCX][CCY][CCZ], int i, int j, int k) {
+    double acc = a[0][i][j][k];
+    double ae1 = a[1][i][j][k];
+    double aw1 = a[2][i][j][k];
+    double an1 = a[3][i][j][k];
+    double as1 = a[4][i][j][k];
+    double at1 = a[5][i][j][k];
+    double ab1 = a[6][i][j][k];
+    double xcc =   xp[i][j][k];
+    double xe1 = xp[i+1][j][k];
+    double xw1 = xp[i-1][j][k];
+    double xn1 = xp[i][j+1][k];
+    double xs1 = xp[i][j-1][k];
+    double xt1 = xp[i][j][k+1];
+    double xb1 = xp[i][j][k-1];
+    double cc = (b[i][j][k] - (acc*xcc + ae1*xe1 + aw1*xw1 + an1*xn1 + as1*xs1 + at1*xt1 + ab1*xb1)) / acc;
+    x[i][j][k] = xcc + cc;
+    return cc*cc;
+}
+
+void copy(double dst[CCX][CCY][CCZ], double src[CCX][CCY][CCZ]) {
+    #pragma acc parallel loop independent collapse(3) present(dst, src)
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+    for (int k = 0; k < CCZ; k ++) {
+        dst[i][j][k] = src[i][j][k];
+    }}}
+}
+
+void jacobi_preconditioner(double a[7][CCX][CCY][CCZ], double x[CCX][CCY][CCZ], double xp[CCX][CCY][CCZ], double b[CCX][CCY][CCZ], int maxiter) {
+    for (int iter = 1; iter <= maxiter; iter ++) {
+        copy(xp, x);
+        #pragma acc parallel loop independent collapse(3) present(a, x, xp, b)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+        for (int k = GC; k < GC+CZ; k ++) {
+            jacobi_core(a, x, xp, b, i, j, k);
+        }}}
+    }
+}
+
 double rbsor_core(double a[7][CCX][CCY][CCZ], double x[CCX][CCY][CCZ], double b[CCX][CCY][CCZ], int i, int j, int k, int color) {
     if ((i + j + k)%2 == color) {
         double acc = a[0][i][j][k];
@@ -384,15 +426,6 @@ void set_field(double vec[CCX][CCY][CCZ], double value) {
     }}}
 }
 
-void copy(double dst[CCX][CCY][CCZ], double src[CCX][CCY][CCZ]) {
-    #pragma acc parallel loop independent collapse(3) present(dst, src)
-    for (int i = 0; i < CCX; i ++) {
-    for (int j = 0; j < CCY; j ++) {
-    for (int k = 0; k < CCZ; k ++) {
-        dst[i][j][k] = src[i][j][k];
-    }}}
-}
-
 void pbicgstab_poisson(PBiCGStab &pcg, double x[CCX][CCY][CCZ]) {
     calc_res(POIA, x, RHS, pcg.r);
     LS_ERR = sqrt(calc_norm2sqr(pcg.r)/CXYZ);
@@ -423,6 +456,7 @@ void pbicgstab_poisson(PBiCGStab &pcg, double x[CCX][CCY][CCZ]) {
         
         set_field(pcg.pp, 0.);
         sor_preconditioner(POIA, pcg.pp, pcg.p, 3);
+        // jacobi_preconditioner(POIA, pcg.pp, pcg.xp, pcg.p, 5);
         calc_ax(POIA, pcg.pp, pcg.q);
 
         alpha = rho/dot_product(pcg.rr, pcg.q);
@@ -436,6 +470,7 @@ void pbicgstab_poisson(PBiCGStab &pcg, double x[CCX][CCY][CCZ]) {
 
         set_field(pcg.ss, 0.);
         sor_preconditioner(POIA, pcg.ss, pcg.s, 3);
+        // jacobi_preconditioner(POIA, pcg.ss, pcg.xp, pcg.s, 5);
         calc_ax(POIA, pcg.ss, pcg.t);
 
         omega = dot_product(pcg.t, pcg.s)/dot_product(pcg.t, pcg.t);
@@ -552,21 +587,21 @@ void projection_center() {
 
 void projection_interface() {
     #pragma acc kernels loop independent collapse(3) present(UU, P)
-    for (int i = GC; i < GC+CX-1; i ++) {
-    for (int j = GC; j < GC+CY  ; j ++) {
-    for (int k = GC; k < GC+CZ  ; k ++) {
+    for (int i = GC-1; i < GC+CX; i ++) {
+    for (int j = GC  ; j < GC+CY; j ++) {
+    for (int k = GC  ; k < GC+CZ; k ++) {
         UU[0][i][j][k] -= DT*DXI*(P[i+1][j][k] - P[i][j][k]);
     }}}
     #pragma acc kernels loop independent collapse(3) present(UU, P)
-    for (int i = GC; i < GC+CX  ; i ++) {
-    for (int j = GC; j < GC+CY-1; j ++) {
-    for (int k = GC; k < GC+CZ  ; k ++) {
+    for (int i = GC  ; i < GC+CX; i ++) {
+    for (int j = GC-1; j < GC+CY; j ++) {
+    for (int k = GC  ; k < GC+CZ; k ++) {
         UU[1][i][j][k] -= DT*DYI*(P[i][j+1][k] - P[i][j][k]);
     }}}
     #pragma acc kernels loop independent collapse(3) present(UU, P)
-    for (int i = GC; i < GC+CX  ; i ++) {
-    for (int j = GC; j < GC+CY  ; j ++) {
-    for (int k = GC; k < GC+CZ-1; k ++) {
+    for (int i = GC  ; i < GC+CX; i ++) {
+    for (int j = GC  ; j < GC+CY; j ++) {
+    for (int k = GC-1; k < GC+CZ; k ++) {
         UU[2][i][j][k] -= DT*DZI*(P[i][j][k+1] - P[i][j][k]);
     }}}
     RMS_DIV = 0;
@@ -647,22 +682,33 @@ void velocity_bc() {
             U[1][icc-offset][j][k] = 0.;
             U[2][icc-offset][j][k] = 0.;
         }
-        icc = GC+CX;
-        int ii1 = icc-1;
-        int ii2 = icc-2;
-        double dudx = .5*DXI*(3*UP[0][icc][j][k] - 4*UP[0][ii1][j][k] + UP[0][ii2][j][k]);
-        double dvdx = .5*DXI*(3*UP[1][icc][j][k] - 4*UP[1][ii1][j][k] + UP[1][ii2][j][k]);
-        double dwdx = .5*DXI*(3*UP[2][icc][j][k] - 4*UP[2][ii1][j][k] + UP[2][ii2][j][k]);
-        double ubc_xplus = UP[0][icc][j][k] - DT*UINLET*dudx;
-        double vbc_xplus = UP[1][icc][j][k] - DT*UINLET*dvdx;
-        double wbc_xplus = UP[2][icc][j][k] - DT*UINLET*dwdx;
-        U[0][icc][j][k] = ubc_xplus;
-        U[1][icc][j][k] = vbc_xplus;
-        U[2][icc][j][k] = wbc_xplus;
-        for (int offset = 1; offset < GC; offset ++) {
-            U[0][icc+offset][j][k] = 2*ubc_xplus - U[0][icc-offset][j][k];
-            U[1][icc+offset][j][k] = 2*vbc_xplus - U[1][icc-offset][j][k];
-            U[2][icc+offset][j][k] = 2*wbc_xplus - U[2][icc-offset][j][k];
+        // icc = GC+CX;
+        // int ii1 = icc-1;
+        // int ii2 = icc-2;
+        // double dudx = .5*DXI*(3*UP[0][icc][j][k] - 4*UP[0][ii1][j][k] + UP[0][ii2][j][k]);
+        // double dvdx = .5*DXI*(3*UP[1][icc][j][k] - 4*UP[1][ii1][j][k] + UP[1][ii2][j][k]);
+        // double dwdx = .5*DXI*(3*UP[2][icc][j][k] - 4*UP[2][ii1][j][k] + UP[2][ii2][j][k]);
+        // double ubc_xplus = UP[0][icc][j][k] - DT*UINLET*dudx;
+        // double vbc_xplus = UP[1][icc][j][k] - DT*UINLET*dvdx;
+        // double wbc_xplus = UP[2][icc][j][k] - DT*UINLET*dwdx;
+        // U[0][icc][j][k] = ubc_xplus;
+        // U[1][icc][j][k] = vbc_xplus;
+        // U[2][icc][j][k] = wbc_xplus;
+        // for (int offset = 1; offset < GC; offset ++) {
+        //     U[0][icc+offset][j][k] = 2*ubc_xplus - U[0][icc-offset][j][k];
+        //     U[1][icc+offset][j][k] = 2*vbc_xplus - U[1][icc-offset][j][k];
+        //     U[2][icc+offset][j][k] = 2*wbc_xplus - U[2][icc-offset][j][k];
+        // }
+        for (int offset = 0; offset < GC; offset ++) {
+            icc = GC+CX+offset;
+            int ii1 = icc - 1;
+            int ii2 = icc - 2;
+            double dudx = .5*DXI*(3*UP[0][icc][j][k] - 4*UP[0][ii1][j][k] + UP[0][ii2][j][k]);
+            double dvdx = .5*DXI*(3*UP[1][icc][j][k] - 4*UP[1][ii1][j][k] + UP[1][ii2][j][k]);
+            double dwdx = .5*DXI*(3*UP[2][icc][j][k] - 4*UP[2][ii1][j][k] + UP[2][ii2][j][k]);
+            U[0][icc][j][k] = UP[0][icc][j][k] - DT*UINLET*dudx;
+            U[1][icc][j][k] = UP[1][icc][j][k] - DT*UINLET*dvdx;
+            U[2][icc][j][k] = UP[2][icc][j][k] - DT*UINLET*dwdx;
         }
     }}
     #pragma acc parallel loop independent collapse(2) present(U)
@@ -779,14 +825,14 @@ int NKX, NKY, NKZ;
 
 complex *ffk[3];
 
-void kforcing_core(complex *forcex, complex *forcey, complex *forcez, int i, int j, int k) {
+void kforce_core(complex forcek1[CX*CY*CZ], complex forcek2[CX*CY*CZ], complex forcek3[CX*CY*CZ], int i, int j, int k) {
     if (i + j + k == 0) {
-        forcex[kidx(i,j,k)][REAL] = 0.;
-        forcex[kidx(i,j,k)][IMAG] = 0.;
-        forcey[kidx(i,j,k)][REAL] = 0.;
-        forcey[kidx(i,j,k)][IMAG] = 0.;
-        forcez[kidx(i,j,k)][REAL] = 0.;
-        forcez[kidx(i,j,k)][IMAG] = 0.;
+        forcek1[kidx(i,j,k)][REAL] = 0.;
+        forcek1[kidx(i,j,k)][IMAG] = 0.;
+        forcek2[kidx(i,j,k)][REAL] = 0.;
+        forcek2[kidx(i,j,k)][IMAG] = 0.;
+        forcek3[kidx(i,j,k)][REAL] = 0.;
+        forcek3[kidx(i,j,k)][IMAG] = 0.;
         return;
     }
     double a1, a2, a3, b1, b2, b3, k1, k2, k3;
@@ -801,15 +847,15 @@ void kforcing_core(complex *forcex, complex *forcey, complex *forcez, int i, int
     b3 = GAUSS(GEN);
     double kabs = sqrt(sqr(k1) + sqr(k2) + sqr(k3));
     double Cf = sqrt(FORCING_EFK/(16*PI*sqr(sqr(kabs))*DT));
-    forcex[kidx(i,j,k)][REAL] = Cf*(k2*a3 - k3*a2);
-    forcex[kidx(i,j,k)][IMAG] = Cf*(k2*b3 - k3*b2);
-    forcey[kidx(i,j,k)][REAL] = Cf*(k3*a1 - k1*a3);
-    forcey[kidx(i,j,k)][IMAG] = Cf*(k3*b1 - k1*b3);
-    forcez[kidx(i,j,k)][REAL] = Cf*(k1*a2 - k2*a1);
-    forcez[kidx(i,j,k)][IMAG] = Cf*(k1*b2 - k2*b1);
+    forcek1[kidx(i,j,k)][REAL] = Cf*(k2*a3 - k3*a2);
+    forcek1[kidx(i,j,k)][IMAG] = Cf*(k2*b3 - k3*b2);
+    forcek2[kidx(i,j,k)][REAL] = Cf*(k3*a1 - k1*a3);
+    forcek2[kidx(i,j,k)][IMAG] = Cf*(k3*b1 - k1*b3);
+    forcek3[kidx(i,j,k)][REAL] = Cf*(k1*a2 - k2*a1);
+    forcek3[kidx(i,j,k)][IMAG] = Cf*(k1*b2 - k2*b1);
 }
 
-void fforcing() {
+void generate_force() {
     for (int i = 0; i < NKX; i ++) {
     for (int j = 0; j < NKY; j ++) {
     for (int k = 0; k < NKZ; k ++) {
@@ -818,15 +864,18 @@ void fforcing() {
         double k3 = k*2*PI/LZ;
         double kabs = sqrt(sqr(k1) + sqr(k2) + sqr(k3));
         if (kabs <= LOW_PASS) {
-            kforcing_core(ffk[0], ffk[1], ffk[2], i, j, k);
+            kforce_core(ffk[0], ffk[1], ffk[2], i, j, k);
         }
     }}}
     #pragma acc update device(ffk[:3][:NKX*NKY*NKZ])
-    #pragma acc parallel loop independent collapse(3) present(FF, ffk[0:3][:NKX*NKY*NKZ], NKX, NKY, NKZ)
+    // printf("wavenumber space force generated\n");
+    #pragma acc parallel loop independent collapse(3) present(FF, ffk[:3][:NKX*NKY*NKZ], NKX, NKY, NKZ)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
-        double fx = 0, fy = 0, fz = 0;
+        FF[0][i][j][k] = 0.;
+        FF[1][i][j][k] = 0.;
+        FF[2][i][j][k] = 0.;
         int I1 = i - GC;
         int I2 = j - GC;
         int I3 = k - GC;
@@ -838,14 +887,12 @@ void fforcing() {
             double th3 = - 2.*PI*I3*K3/double(CZ);
             double Real = cos(th1 + th2 + th3);
             double Imag = sin(th1 + th2 + th3);
-            fx += ffk[0][kidx(K1,K2,K3)][REAL]*Real - ffk[0][kidx(K1,K2,K3)][IMAG]*Imag;
-            fy += ffk[1][kidx(K1,K2,K3)][REAL]*Real - ffk[1][kidx(K1,K2,K3)][IMAG]*Imag;
-            fz += ffk[2][kidx(K1,K2,K3)][REAL]*Real - ffk[2][kidx(K1,K2,K3)][IMAG]*Imag;
+            FF[0][i][j][k] += ffk[0][kidx(K1,K2,K3)][REAL]*Real - ffk[0][kidx(K1,K2,K3)][IMAG]*Imag;
+            FF[1][i][j][k] += ffk[1][kidx(K1,K2,K3)][REAL]*Real - ffk[1][kidx(K1,K2,K3)][IMAG]*Imag;
+            FF[2][i][j][k] += ffk[2][kidx(K1,K2,K3)][REAL]*Real - ffk[2][kidx(K1,K2,K3)][IMAG]*Imag;
         }}}
-        FF[0][i][j][k] = fx;
-        FF[1][i][j][k] = fy;
-        FF[2][i][j][k] = fz;
     }}}
+    // printf("physical space force generated\n");
 }
 
 void main_loop() {
@@ -855,16 +902,16 @@ void main_loop() {
     copy(UP[1], U[1]);
     copy(UP[2], U[2]);
 
-    random_lagrange_forcing();
+    // random_lagrange_forcing();
 // printf("-2\n");fflush(stdout);
-    // fforcing();
+    generate_force();
 // printf("-1\n");fflush(stdout);
     prediction();
 // printf("0\n");fflush(stdout);
     interpolation(MAXDIAGI);
 // printf("1\n");fflush(stdout);
-    // ls_poisson();
-    pbicgstab_poisson(pcg, P);
+    ls_poisson();
+    // pbicgstab_poisson(pcg, P);
 // printf("2\n");fflush(stdout);
     pressure_centralize();
     pressure_bc();
@@ -998,7 +1045,7 @@ int main() {
 
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, MAX_CFL);
+        printf("\r%8d, %9.5lf, %5d, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, MAX_CFL);
         fflush(stdout);
     }
     printf("\n");

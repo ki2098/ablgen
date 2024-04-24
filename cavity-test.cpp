@@ -14,9 +14,9 @@ const static int REAL = 0;
 const static int IMAG = 1;
 
 const static double PI   = M_PI;
-const static int    NX   = 128;
-const static int    NY   = 128;
-const static int    NZ   = 128;
+const static int    NX   = 64;
+const static int    NY   = 64;
+const static int    NZ   = 64;
 const static int    GC   = 3;
 const static int    CX   = NX;
 const static int    CY   = NY;
@@ -52,7 +52,7 @@ const static int    LS_MAXITER = 1000;
 const static double LS_EPS     = 1e-6;
 double              LS_ERR;
 int                 ISTEP;
-const static double MAXT        = 10;
+const static double MAXT        = 100;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
 
@@ -711,7 +711,7 @@ void main_loop() {
     interpolation(MAXDIAGI);
     pbicgstab_poisson(pcg, P);
     // ls_poisson();
-    pressure_centralize();
+    // pressure_centralize();
     pressure_bc();
 
     projection_center();
