@@ -61,7 +61,7 @@ double              RMS_DIV;
 const static double C_SMAGORINSKY = 0.1;
 double              TURB_K;
 const static double FORCING_EPS   = 1e-2;
-const static double FORCING_EFK   = 1e-6;
+const static double FORCING_EFK   = 1e-3;
 const static double LOW_PASS      = 2.;
 
 random_device RD;
@@ -787,7 +787,9 @@ void random_lagrange_forcing() {
     for (int k = GC; k < GC+CZ; k ++) {
         double fx = 0, fy = 0, fz = 0;
         double space_eps = 2*cbrt(DX*DY*DZ);
+        #pragma acc loop seq
         for (int fpj = 0; fpj < NFPY; fpj ++) {
+        #pragma acc loop seq
         for (int fpk = 0; fpk < NFPZ; fpk ++) {
             double dx = X[i] - fpposition[0][fpj][fpk];
             double dy = Y[j] - fpposition[1][fpj][fpk];
@@ -873,24 +875,31 @@ void generate_force() {
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
-        FF[0][i][j][k] = 0.;
-        FF[1][i][j][k] = 0.;
-        FF[2][i][j][k] = 0.;
+        // FF[0][i][j][k] = 0.;
+        // FF[1][i][j][k] = 0.;
+        // FF[2][i][j][k] = 0.;
+        double fx = 0., fy = 0., fz = 0.;
         int I1 = i - GC;
         int I2 = j - GC;
         int I3 = k - GC;
+        #pragma acc loop seq
         for (int K1 = 0; K1 < NKX; K1 ++) {
+        #pragma acc loop seq
         for (int K2 = 0; K2 < NKY; K2 ++) {
+        #pragma acc loop seq
         for (int K3 = 0; K3 < NKZ; K3 ++) {
             double th1 = - 2.*PI*I1*K1/double(CX);
             double th2 = - 2.*PI*I2*K2/double(CY);
             double th3 = - 2.*PI*I3*K3/double(CZ);
             double Real = cos(th1 + th2 + th3);
             double Imag = sin(th1 + th2 + th3);
-            FF[0][i][j][k] += ffk[0][kidx(K1,K2,K3)][REAL]*Real - ffk[0][kidx(K1,K2,K3)][IMAG]*Imag;
-            FF[1][i][j][k] += ffk[1][kidx(K1,K2,K3)][REAL]*Real - ffk[1][kidx(K1,K2,K3)][IMAG]*Imag;
-            FF[2][i][j][k] += ffk[2][kidx(K1,K2,K3)][REAL]*Real - ffk[2][kidx(K1,K2,K3)][IMAG]*Imag;
+            fx += ffk[0][kidx(K1,K2,K3)][REAL]*Real - ffk[0][kidx(K1,K2,K3)][IMAG]*Imag;
+            fy += ffk[1][kidx(K1,K2,K3)][REAL]*Real - ffk[1][kidx(K1,K2,K3)][IMAG]*Imag;
+            fz += ffk[2][kidx(K1,K2,K3)][REAL]*Real - ffk[2][kidx(K1,K2,K3)][IMAG]*Imag;
         }}}
+        FF[0][i][j][k] = fx;
+        FF[1][i][j][k] = fy;
+        FF[2][i][j][k] = fz;
     }}}
     // printf("physical space force generated\n");
 }
@@ -929,11 +938,11 @@ void output_field(string prefix, int n) {
     char fname[128];
     sprintf(fname, "%s.%d", prefix.c_str(), n);
     FILE *file = fopen(fname, "w");
-    fprintf(file, "x,y,z,u,v,w,p,q,f1,f2,f3\n");
+    fprintf(file, "x,y,z,u,v,w,p,q\n");
     for (int k = GC; k < GC+CZ; k ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int i = GC; i < GC+CX; i ++) {
-        fprintf(file, "%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k], FF[0][i][j][k], FF[1][i][j][k], FF[2][i][j][k]);
+        fprintf(file, "%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k]);
     }}}
     fclose(file);
 }

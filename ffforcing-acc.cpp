@@ -685,7 +685,6 @@ int NNX, NNY, NNZ;
 
 #define nnidx(i,j,k) (i)*NNY*NNZ+(j)*NNZ+(k)
 
-
 complex *ffk[3];
 
 void kforce_core(complex forcek1[CX*CY*CZ], complex forcek2[CX*CY*CZ], complex forcek3[CX*CY*CZ], int i, int j, int k) {
