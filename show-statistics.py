@@ -1,9 +1,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
 d = pd.read_csv("data/statistics.csv")
 
 plt.plot(d["t"], d["k"], label="k")
 plt.plot(d["t"], d["i"], label="i")
+plt.grid(True)
+plt.ylim([0, 0.1])
+plt.yticks(np.arange(0, 0.11, 0.1/10))
 plt.legend()
 plt.show()

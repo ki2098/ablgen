@@ -44,7 +44,7 @@ const static int    LS_MAXITER = 1000;
 const static double LS_EPS     = 1e-3;
 double              LS_ERR;
 int                 ISTEP;
-const static double MAXT        = 300;
+const static double MAXT        = 1000;
 const static double STATIC_START = 200.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
@@ -52,7 +52,6 @@ double              MAXDIAGI = 1.;
 
 const static double C_SMAGORINSKY = 0.1;
 double              TURB_K;
-double              TURB_K_TAVG = 0.;
 double              TURB_I;
 int                 TAVG_NSTEP = 0;
 int                 STATIC_NSTEP = 0;
@@ -60,7 +59,8 @@ int                 STATIC_NSTEP = 0;
 const static double LOW_PASS = 2.;
 const static double FORCING_EFK = 5e-3;
 
-default_random_engine GEN;
+random_device RD;
+default_random_engine GEN(RD());
 normal_distribution<double> GAUSS(0., 1.);
 
 const static int REAL = 0;
@@ -69,7 +69,8 @@ const static int IMAG = 1;
 double MAX_CFL;
 
 double X[CCX]={}, Y[CCY]={}, Z[CCZ]={};
-double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={}, UAVG[3][CCX][CCY][CCZ];
+double U[3][CCX][CCY][CCZ]={}, UU[3][CCX][CCY][CCZ]={}, P[CCX][CCY][CCZ]={}, UP[3][CCX][CCY][CCZ]={};
+double UAVG[3][CCX][CCY][CCZ]={}, UPER[3][CCX][CCY][CCZ];
 double RHS[CCX][CCY][CCZ]={};
 double FF[3][CCX][CCY][CCZ]={};
 double Q[CCX][CCY][CCZ]={};
@@ -77,11 +78,11 @@ double NUT[CCX][CCY][CCZ]={};
 double POIA[7][CCX][CCY][CCZ]={};
 
 void init_env() {
-    #pragma acc enter data copyin(U, UU, P, UP, UAVG, RHS, FF, Q, NUT, POIA)
+    #pragma acc enter data copyin(U, UU, P, UP, UAVG, UPER, RHS, FF, Q, NUT, POIA)
 }
 
 void finalize_env() {
-    #pragma acc exit data delete(U, UU, P, UP, UAVG, RHS, FF, Q, NUT, POIA)
+    #pragma acc exit data delete(U, UU, P, UP, UAVG, UPER, RHS, FF, Q, NUT, POIA)
 }
 
 struct PBiCGStab {
@@ -228,7 +229,7 @@ void interpolation(double max_diag_inverse) {
     }}}
 }
 
-double sor_rb_core(double phi[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, int j, int k, int color, double max_diag_inverse) {
+double sor_rb_core(double x[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, int j, int k, int color, double max_diag_inverse) {
     if ((i+j+k)%2 == color) {
         double ae1 = DDXI*max_diag_inverse;
         double aw1 = DDXI*max_diag_inverse;
@@ -237,13 +238,21 @@ double sor_rb_core(double phi[CCX][CCY][CCZ], double rhs[CCX][CCY][CCZ], int i, 
         double at1 = DDZI*max_diag_inverse;
         double ab1 = DDZI*max_diag_inverse;
         double acc = - (ae1 + aw1 + an1 + as1 + at1 + ab1);
-        double  cc = rhs[i][j][k];
-        cc -= ae1*phi[i+1][j][k] + aw1*phi[i-1][j][k];
-        cc -= an1*phi[i][j+1][k] + as1*phi[i][j-1][k];
-        cc -= at1*phi[i][j][k+1] + ab1*phi[i][j][k-1];
-        cc -= acc*phi[i][j][k];
-        cc /= acc;
-        phi[i][j][k] += SOR_OMEGA*cc;
+        double xcc = x[i][j][k];
+        int iw1 = (i > GC     )? i-1 : GC+CX-1;
+        int ie1 = (i < GC+CX-1)? i+1 : GC     ;
+        int js1 = (j > GC     )? j-1 : GC+CY-1;
+        int jn1 = (j < GC+CY-1)? j+1 : GC     ;
+        int kb1 = (k > GC     )? k-1 : GC+CZ-1;
+        int kt1 = (k < GC+CZ-1)? k+1 : GC     ;
+        double xe1 = x[ie1][j][k];
+        double xw1 = x[iw1][j][k];
+        double xn1 = x[i][jn1][k];
+        double xs1 = x[i][js1][k];
+        double xt1 = x[i][j][kt1];
+        double xb1 = x[i][j][kb1];
+        double cc = (rhs[i][j][k] - (acc*xcc + ae1*xe1 + aw1*xw1 + an1*xn1 + as1*xs1 + at1*xt1 + ab1*xb1)) / acc;
+        x[i][j][k] += SOR_OMEGA*cc;
         return sq(cc);
     } else {
         return 0;
@@ -813,36 +822,57 @@ void calc_q() {
     }}}
 }
 
-void time_accumulate() {
-    #pragma acc parallel loop independent collapse(3) present(U, UAVG)
-    for (int i = 0; i < CCX; i ++) {
-    for (int j = 0; j < CCY; j ++) {
-    for (int k = 0; k < CCZ; k ++) {
-        UAVG[0][i][j][k] += U[0][i][j][k];
-        UAVG[1][i][j][k] += U[1][i][j][k];
-        UAVG[2][i][j][k] += U[2][i][j][k];
-    }}}
-}
-
-void turbulence_kinetic_energy() {
-    TURB_K = 0;
-    #pragma acc parallel loop independent reduction(+:TURB_K) collapse(3) present(U, UAVG) firstprivate(TAVG_NSTEP)
+void calc_time_average(int nstep) {
+    #pragma acc parallel loop independent collapse(3) present(U, UAVG) firstprivate(nstep)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
-        double uavg = UAVG[0][i][j][k] / TAVG_NSTEP;
-        double vavg = UAVG[1][i][j][k] / TAVG_NSTEP;
-        double wavg = UAVG[2][i][j][k] / TAVG_NSTEP;
-        double uper = U[0][i][j][k] - uavg;
-        double vper = U[1][i][j][k] - vavg;
-        double wper = U[2][i][j][k] - wavg;
-        TURB_K += .5*(sq(uper) + sq(vper) + sq(wper));
+        UAVG[0][i][j][k] = ((nstep - 1)*UAVG[0][i][j][k] + U[0][i][j][k])/nstep;
+        UAVG[1][i][j][k] = ((nstep - 1)*UAVG[1][i][j][k] + U[1][i][j][k])/nstep;
+        UAVG[2][i][j][k] = ((nstep - 1)*UAVG[2][i][j][k] + U[2][i][j][k])/nstep;
     }}}
-    TURB_K /= (CX*CY*CZ);
-    if (ISTEP >= int(STATIC_START/DT)) {
-        TURB_K_TAVG += TURB_K;
-        STATIC_NSTEP ++;
-    }
+}
+
+void calc_u_perturbation() {
+    #pragma acc parallel loop independent collapse(3) present(U, UAVG, UPER)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        UPER[0][i][j][k] = U[0][i][j][k] - UAVG[0][i][j][k];
+        UPER[1][i][j][k] = U[1][i][j][k] - UAVG[1][i][j][k];
+        UPER[2][i][j][k] = U[2][i][j][k] - UAVG[2][i][j][k];
+    }}}
+}
+
+void calc_turb_k() {
+    TURB_K = 0;
+    #pragma acc parallel loop independent reduction(+:TURB_K) collapse(3) present(UPER) 
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        double du = UPER[0][i][j][k];
+        double dv = UPER[1][i][j][k];
+        double dw = UPER[2][i][j][k];
+        TURB_K += .5*sqrt(du*du + dv*dv + dw*dw);
+    }}}
+    TURB_K /= CXYZ;
+}
+
+void calc_turb_i() {
+    TURB_I = 0;
+    #pragma acc parallel loop independent reduction(+:TURB_I) collapse(3) present(UPER, UAVG) 
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        double u_ = UAVG[0][i][j][k];
+        double v_ = UAVG[1][i][j][k];
+        double w_ = UAVG[2][i][j][k];
+        double du = UPER[0][i][j][k];
+        double dv = UPER[1][i][j][k];
+        double dw = UPER[2][i][j][k];
+        TURB_I += sqrt((du*du + dv*dv + dw*dw)/3.)/sqrt(u_*u_ + v_*v_ + w_*w_);
+    }}}
+    TURB_I /= CXYZ;
 }
 
 void main_loop() {
@@ -858,8 +888,8 @@ void main_loop() {
     interpolation(MAXDIAGI);
 
     pbicgstab_poisson(pcg, P);
-    // ls_poisson();
-    pressure_centralize();
+    ls_poisson();
+    // pressure_centralize();
     periodic_bc(P, 1);
 
     projection_center();
@@ -871,24 +901,24 @@ void main_loop() {
     // turbulence();
     // periodic_bc(NUT, 1);
 
-    TAVG_NSTEP ++;
-    time_accumulate();
-    turbulence_kinetic_energy();
-    
+    calc_time_average(ISTEP);
+    calc_u_perturbation();
+    calc_turb_k();
+    calc_turb_i();
     calc_q();
     max_cfl();
 }
 
 void output_field(int n) {
-    #pragma acc update self(U, P, Q)
+    #pragma acc update self(U, P, Q, UAVG)
     char fname[128];
     sprintf(fname, "data/ffforce-field.csv.%d", n);
     FILE *file = fopen(fname, "w");
-    fprintf(file, "x,y,z,u,v,w,p,q\n");
+    fprintf(file, "x,y,z,u,v,w,p,q,ua,va,wa\n");
     for (int k = GC; k < GC+CZ; k ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int i = GC; i < GC+CX; i ++) {
-        fprintf(file, "%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e,%12.3e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k]);
+        fprintf(file, "%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k], UAVG[0][i][j][k], UAVG[1][i][j][k], UAVG[2][i][j][k]);
     }}}
     fclose(file);
 }
@@ -958,7 +988,18 @@ void make_grid() {
     }
 }
 
+void fill_field() {
+    const double u_init[] = {1., 0., 0.};
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+    for (int k = 0; k < CCZ; k ++) {
+    for (int d = 0; d < 3; d ++) {
+        U[d][i][j][k] = u_init[d];
+    }}}}
+}
+
 int main() {
+    fill_field();
     const int MAX_NX = int(LOW_PASS*LX/(2*PI));
     const int MAX_NY = int(LOW_PASS*LY/(2*PI));
     const int MAX_NZ = int(LOW_PASS*LZ/(2*PI));
@@ -974,26 +1015,28 @@ int main() {
     #pragma acc enter data copyin(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     init_env();
     pcg.init();
+    interpolation(MAXDIAGI);
     
     make_grid();
     make_eq();
     printf("max diag=%lf\n", 1./MAXDIAGI);
 
+    FILE *statistic_file = fopen("data/statistics.csv", "w");
+    fprintf(statistic_file, "t,k,i\n");
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_TAVG/STATIC_NSTEP, MAX_CFL);
+        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_I, MAX_CFL);
         fflush(stdout);
-        if (ISTEP%int(1./DT) == 0) {
-            if (ISTEP >= int(STATIC_START/DT)) {
-                // output_field(ISTEP/int(1./DT));
-            }
+        if (ISTEP%int(1./DT) == 0 && ISTEP >= int(10000./DT)) {
+            output_field(ISTEP/int(1./DT));
             printf("\n");
+        }
+        if (ISTEP%int(1./DT) == 0 && ISTEP >= int(200./DT)) {
+            fprintf(statistic_file, "%10.5lf,%12.5e,%12.5e\n", gettime(), TURB_K, TURB_I);
         }
     }
     printf("\n");
-    output_field(0);
-    TURB_K_TAVG /= STATIC_NSTEP;
-    printf("time space average turbulence k=%e\n", TURB_K_TAVG);
+    fclose(statistic_file);
 
     #pragma acc exit data delete(ffk[:3][:NNX*NNY*NNZ], NNX, NNY, NNZ)
     finalize_env();

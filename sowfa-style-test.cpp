@@ -53,7 +53,7 @@ const static int    LS_MAXITER = 1000;
 const static double LS_EPS     = 1e-6;
 double              LS_ERR;
 int                 ISTEP;
-const static double MAXT        = 400.;
+const static double MAXT        = 1000.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
 
@@ -76,6 +76,7 @@ double UU[3][CCX][CCY][CCZ]={};
 double P[CCX][CCY][CCZ]={};
 double UP[3][CCX][CCY][CCZ]={};
 double UAVG[3][CCX][CCY][CCZ];
+double UPER[3][CCX][CCY][CCZ];
 double RHS[CCX][CCY][CCZ]={};
 double FF[3][CCX][CCY][CCZ]={};
 double Q[CCX][CCY][CCZ]={};
@@ -89,11 +90,11 @@ double fpposition[3][NFPY][NFPZ];
 double fpforce[3][NFPY][NFPZ];
 
 void init_env() {
-    #pragma acc enter data copyin(DVR, POIA, fpposition, fpforce, U, UU, P, UP, UAVG, RHS, FF, Q, NUT, X, Y, Z)
+    #pragma acc enter data copyin(DVR, POIA, fpposition, fpforce, U, UU, P, UP, UAVG, UPER, RHS, FF, Q, NUT, X, Y, Z)
 }
 
 void finalize_env() {
-    #pragma acc exit data delete(DVR, POIA, fpposition, fpforce, U, UU, P, UP, UAVG, RHS, FF, Q, NUT, X, Y, Z)
+    #pragma acc exit data delete(DVR, POIA, fpposition, fpforce, U, UU, P, UP, UAVG, UPER, RHS, FF, Q, NUT, X, Y, Z)
 }
 
 struct PBiCGStab {
@@ -532,15 +533,26 @@ void calc_time_average(int nstep) {
     }}}
 }
 
-void calc_turb_k() {
-    TURB_K = 0;
-    #pragma acc parallel loop independent reduction(+:TURB_K) collapse(3) present(U, UAVG) 
+void calc_u_perturbation() {
+    #pragma acc parallel loop independent collapse(3) present(U, UAVG, UPER)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
-        double du = U[0][i][j][k] - UAVG[0][i][j][k];
-        double dv = U[1][i][j][k] - UAVG[1][i][j][k];
-        double dw = U[2][i][j][k] - UAVG[2][i][j][k];
+        UPER[0][i][j][k] = U[0][i][j][k] - UAVG[0][i][j][k];
+        UPER[1][i][j][k] = U[1][i][j][k] - UAVG[1][i][j][k];
+        UPER[2][i][j][k] = U[2][i][j][k] - UAVG[2][i][j][k];
+    }}}
+}
+
+void calc_turb_k() {
+    TURB_K = 0;
+    #pragma acc parallel loop independent reduction(+:TURB_K) collapse(3) present(UPER) 
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+    for (int k = GC; k < GC+CZ; k ++) {
+        double du = UPER[0][i][j][k];
+        double dv = UPER[1][i][j][k];
+        double dw = UPER[2][i][j][k];
         TURB_K += .5*sqrt(du*du + dv*dv + dw*dw);
     }}}
     TURB_K /= CXYZ;
@@ -548,16 +560,16 @@ void calc_turb_k() {
 
 void calc_turb_i() {
     TURB_I = 0;
-    #pragma acc parallel loop independent reduction(+:TURB_I) collapse(3) present(U, UAVG) 
+    #pragma acc parallel loop independent reduction(+:TURB_I) collapse(3) present(UPER, UAVG) 
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int k = GC; k < GC+CZ; k ++) {
         double u_ = UAVG[0][i][j][k];
         double v_ = UAVG[1][i][j][k];
         double w_ = UAVG[2][i][j][k];
-        double du = U[0][i][j][k] - u_;
-        double dv = U[1][i][j][k] - v_;
-        double dw = U[2][i][j][k] - w_;
+        double du = UPER[0][i][j][k];
+        double dv = UPER[1][i][j][k];
+        double dw = UPER[2][i][j][k];
         TURB_I += sqrt((du*du + dv*dv + dw*dw)/3.)/sqrt(u_*u_ + v_*v_ + w_*w_);
     }}}
     TURB_I /= CXYZ;
@@ -587,21 +599,22 @@ void main_loop() {
 
     calc_q();
     calc_time_average(ISTEP);
+    calc_u_perturbation();
     calc_turb_i();
     calc_turb_k();
     max_cfl();
 }
 
 void output_field(int n) {
-    #pragma acc update self(U, P, Q, DVR, UAVG)
+    #pragma acc update self(U, P, Q, DVR, UPER)
     char fname[128];
     sprintf(fname, "data/sowfa-style-field.csv.%d", n);
     FILE *file = fopen(fname, "w");
-    fprintf(file, "x,y,z,u,v,w,p,q,divergence,uavg,vavg,wavg\n");
+    fprintf(file, "x,y,z,u,v,w,p,q,divergence,up,vp,wp\n");
     for (int k = GC; k < GC+CZ; k ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int i = GC; i < GC+CX; i ++) {
-        fprintf(file, "%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k], DVR[i][j][k], UAVG[0][i][j][k], UAVG[1][i][j][k], UAVG[2][i][j][k]);
+        fprintf(file, "%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e\n", X[i], Y[j], Z[k], U[0][i][j][k], U[1][i][j][k], U[2][i][j][k], P[i][j][k], Q[i][j][k], DVR[i][j][k], UPER[0][i][j][k], UPER[1][i][j][k], UPER[2][i][j][k]);
     }}}
     fclose(file);
 }
@@ -658,7 +671,7 @@ int main() {
         main_loop();
         printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_I, MAX_CFL);
         fflush(stdout);
-        if (ISTEP%int(1./DT) == 0 && ISTEP >= int(300./DT)) {
+        if (ISTEP%int(1./DT) == 0 && ISTEP >= int(10000./DT)) {
             output_field(ISTEP/int(1./DT));
             printf("\n");
         }
