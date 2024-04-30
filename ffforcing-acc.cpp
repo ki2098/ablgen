@@ -57,7 +57,7 @@ int                 TAVG_NSTEP = 0;
 int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
-const static double FORCING_EFK = 5e-3;
+const static double FORCING_EFK = 1e-3;
 
 random_device RD;
 default_random_engine GEN(RD());
