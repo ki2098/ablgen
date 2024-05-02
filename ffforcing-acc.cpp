@@ -51,13 +51,13 @@ double              RMS_DIV;
 double              MAXDIAGI = 1.;
 
 const static double C_SMAGORINSKY = 0.1;
-double              TURB_K;
-double              TURB_I;
+double              TURB_K, TURB_K_AVG=0.;
+double              TURB_I, TURB_I_AVG=0.;
 int                 TAVG_NSTEP = 0;
 int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
-const static double FORCING_EFK = 1e-3;
+const static double FORCING_EFK = 1e-2;
 
 random_device RD;
 default_random_engine GEN(RD());
@@ -1022,18 +1022,23 @@ int main() {
     printf("max diag=%lf\n", 1./MAXDIAGI);
 
     FILE *statistic_file = fopen("data/statistics.csv", "w");
-    fprintf(statistic_file, "t,k,i\n");
+    fprintf(statistic_file, "t,k,i,kAvg,iAvg\n");
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_I, MAX_CFL);
-        fflush(stdout);
         if (ISTEP%int(1./DT) == 0 && ISTEP >= int(10000./DT)) {
             output_field(ISTEP/int(1./DT));
             printf("\n");
         }
-        if (ISTEP%int(1./DT) == 0 && ISTEP >= int(200./DT)) {
-            fprintf(statistic_file, "%10.5lf,%12.5e,%12.5e\n", gettime(), TURB_K, TURB_I);
+        if (ISTEP >= int(200./DT)) {
+            double NTURBAVG = ISTEP - int(200./DT) + 1;
+            TURB_K_AVG = (1. - 1./NTURBAVG)*TURB_K_AVG + (1./NTURBAVG)*TURB_K;
+            TURB_I_AVG = (1. - 1./NTURBAVG)*TURB_I_AVG + (1./NTURBAVG)*TURB_I;
+            if (ISTEP%int(1./DT) == 0) {
+                fprintf(statistic_file, "%10.5lf,%12.5e,%12.5e,%12.5e,%12.5e\n", gettime(), TURB_K, TURB_I, TURB_K_AVG, TURB_I_AVG);
+            }
         }
+        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_AVG, TURB_I, TURB_I_AVG, MAX_CFL);
+        fflush(stdout);
     }
     printf("\n");
     fclose(statistic_file);

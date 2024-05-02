@@ -6,6 +6,8 @@ d = pd.read_csv("data/statistics.csv")
 
 plt.plot(d["t"], d["k"], label="k")
 plt.plot(d["t"], d["i"], label="i")
+plt.plot(d["t"], d["kAvg"], label="kAvg")
+plt.plot(d["t"], d["iAvg"], label="iAvg")
 plt.grid(True)
 plt.ylim([0, 0.1])
 plt.yticks(np.arange(0, 0.11, 0.1/10))
