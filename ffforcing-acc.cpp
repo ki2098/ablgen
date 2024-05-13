@@ -57,7 +57,7 @@ int                 TAVG_NSTEP = 0;
 int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 2.;
-const static double FORCING_EFK = 1e-2;
+const static double FORCING_EFK = 1.5e-2;
 
 random_device RD;
 default_random_engine GEN(RD());
@@ -1029,8 +1029,8 @@ int main() {
             output_field(ISTEP/int(1./DT));
             printf("\n");
         }
-        if (ISTEP >= int(200./DT)) {
-            double NTURBAVG = ISTEP - int(200./DT) + 1;
+        if (ISTEP >= int(STATIC_START/DT)) {
+            double NTURBAVG = ISTEP - int(STATIC_START/DT) + 1;
             TURB_K_AVG = (1. - 1./NTURBAVG)*TURB_K_AVG + (1./NTURBAVG)*TURB_K;
             TURB_I_AVG = (1. - 1./NTURBAVG)*TURB_I_AVG + (1./NTURBAVG)*TURB_I;
             if (ISTEP%int(1./DT) == 0) {
