@@ -89,7 +89,7 @@ void finalize_env() {
     #pragma acc exit data delete(POIA, fpposition, fpforce, U, UU, P, UP, UAVG, RHS, FF, Q, NUT, X, Y, Z)
 }
 
-struct PBiCGStab {
+struct LSVars {
     double   xp[CCX][CCY][CCZ]={};
     double    r[CCX][CCY][CCZ]={};
     double   rr[CCX][CCY][CCZ]={};
@@ -426,7 +426,7 @@ void set_field(double vec[CCX][CCY][CCZ], double value) {
     }}}
 }
 
-void pbicgstab_poisson(PBiCGStab &pcg, double x[CCX][CCY][CCZ]) {
+void pbicgstab_poisson(LSVars &pcg, double x[CCX][CCY][CCZ]) {
     calc_res(POIA, x, RHS, pcg.r);
     LS_ERR = sqrt(calc_norm2sqr(pcg.r)/CXYZ);
     copy(pcg.rr, pcg.r);

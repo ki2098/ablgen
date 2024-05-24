@@ -97,7 +97,7 @@ void finalize_env() {
     #pragma acc exit data delete(DVR, POIA, fpposition, fpforce, U, UU, P, UP, UAVG, UPER, RHS, FF, Q, NUT, X, Y, Z)
 }
 
-struct PBiCGStab {
+struct LSVars {
     double   xp[CCX][CCY][CCZ]={};
     double    r[CCX][CCY][CCZ]={};
     double   rr[CCX][CCY][CCZ]={};

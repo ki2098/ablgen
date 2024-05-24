@@ -74,6 +74,8 @@
         "typeinfo": "cpp",
         "variant": "cpp",
         "mprealsupport": "cpp",
-        "__locale": "cpp"
+        "__locale": "cpp",
+        "__nullptr": "cpp",
+        "codecvt": "cpp"
     }
 }
