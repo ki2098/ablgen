@@ -45,7 +45,7 @@ const static double LS_EPS     = 1e-3;
 double              LS_ERR;
 int                 ISTEP;
 const static double MAXT        = 1000;
-const static double STATIC_START = 200.;
+const static double STATIC_AVG_START = 200.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
 double              MAXDIAGI = 1.;
@@ -1029,8 +1029,8 @@ int main() {
             output_field(ISTEP/int(1./DT));
             printf("\n");
         }
-        if (ISTEP >= int(STATIC_START/DT)) {
-            double NTURBAVG = ISTEP - int(STATIC_START/DT) + 1;
+        if (ISTEP >= int(STATIC_AVG_START/DT)) {
+            double NTURBAVG = ISTEP - int(STATIC_AVG_START/DT) + 1;
             TURB_K_AVG = (1. - 1./NTURBAVG)*TURB_K_AVG + (1./NTURBAVG)*TURB_K;
             TURB_I_AVG = (1. - 1./NTURBAVG)*TURB_I_AVG + (1./NTURBAVG)*TURB_I;
             if (ISTEP%int(1./DT) == 0) {

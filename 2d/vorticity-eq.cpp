@@ -39,12 +39,14 @@ const static double REI  = 1./RE;
 const static double SOR_OMEGA   = 1.2;
 int                 LS_ITER;
 const static int    LS_MAXITER = 1000;
-const static double LS_EPS     = 1e-3;
+const static double LS_EPS     = 1e-4;
 double              LS_ERR;
 int                 ISTEP;
-const static double MAXT        = 1000.;
-const static double STATIC_START =200.;
-const static double OUPUT_START = 900.;
+const static double MAXT        = 1500.;
+const static double STATIC_AVG_START =500.;
+// const static double TAVG_START = 1000.;
+const static double OUPUT_START = 1400.;
+const static double OUTPUT_INTERVAL=1.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
 double              MAXDIAGI = 1.;
@@ -57,8 +59,8 @@ int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 10.;
 const static double HIGH_PASS = 5.;
-const static double FORCING_EFK = 10.;
-const static double K = 2e-1;
+const static double FORCING_EFK = 3;
+const static double K = 3e-2;
 
 const static double UINFLOW = 0.;
 const static double VINFLOW = 0.;
@@ -79,8 +81,11 @@ double PSI[CCX][CCY]={};
 double POIA[5][CCX][CCY]={};
 double RHS[CCX][CCY]={};
 double FF[CCX][CCY]={};
+double UAVG[2][CCX][CCY]={};
+double UPER[2][CCX][CCY]={};
 
 struct LSVars {
+    double   xp[CCX][CCY]={};
     double    r[CCX][CCY]={};
     double   rr[CCX][CCY]={};
     double    p[CCX][CCY]={};
@@ -91,20 +96,20 @@ struct LSVars {
     double    t[CCX][CCY]={};
 
     void init() {
-        #pragma acc enter data copyin(this[0:1], r, rr, p, q, s, pp, ss, t)
+        #pragma acc enter data copyin(this[0:1], xp, r, rr, p, q, s, pp, ss, t)
     }
 
     void finalize() {
-        #pragma acc exit data delete(this[0:1], r, rr, p, q, s, pp, ss, t)
+        #pragma acc exit data delete(this[0:1], xp, r, rr, p, q, s, pp, ss, t)
     }
 } lsvar;
 
 void init_env() {
-    #pragma acc enter data copyin(X, Y, U, OMG, OMGP, PSI, POIA, RHS, FF)
+    #pragma acc enter data copyin(X, Y, U, OMG, OMGP, PSI, POIA, RHS, FF, UAVG, UPER)
 }
 
 void finalize_env() {
-    #pragma acc exit data delete(X, Y, U, OMG, OMGP, PSI, POIA, RHS, FF)
+    #pragma acc exit data delete(X, Y, U, OMG, OMGP, PSI, POIA, RHS, FF, UAVG, UPER)
 }
 
 double gettime() {
@@ -197,6 +202,26 @@ double rbsor_core(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY],
     }
 }
 
+double jacobi_core(double a[5][CCX][CCY], double x[CCX][CCY], double xp[CCX][CCY], double b[CCX][CCY], int i, int j) {
+    double acc = a[0][i][j];
+    double ae1 = a[1][i][j];
+    double aw1 = a[2][i][j];
+    double an1 = a[3][i][j];
+    double as1 = a[4][i][j];
+    int iw = (i > GC     )? i-1 : GC+CX-1;
+    int ie = (i < GC+CX-1)? i+1 : GC     ;
+    int js = (j > GC     )? j-1 : GC+CY-1;
+    int jn = (j < GC+CY-1)? j+1 : GC     ;
+    double xcc =    x[i][j];
+    double xe1 =   x[ie][j];
+    double xw1 =   x[iw][j];
+    double xn1 =   x[i][jn];
+    double xs1 =   x[i][js];
+    double cc  = (b[i][j] - (acc*xcc + ae1*xe1 + aw1*xw1 + an1*xn1 + as1*xs1)) / acc;
+    x[i][j] = xcc + cc;
+    return cc*cc;
+}
+
 void calc_res(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], double r[CCX][CCY]) {
     #pragma acc parallel loop independent collapse(2) present(a, x, b, r)
     for (int i = GC; i < GC+CX; i ++) {
@@ -217,6 +242,38 @@ void calc_res(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], dou
         double xs1 = x[i][js];
         r[i][j] = b[i][j] - (acc*xcc + ae1*xe1 + aw1*xw1 + an1*xn1 + as1*xs1);
     }}
+}
+
+void calc_ax(double a[5][CCX][CCY], double x[CCX][CCY], double ax[CCX][CCY]) {
+    #pragma acc parallel loop independent collapse(2) present(a, x, ax)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        double acc = a[0][i][j];
+        double ae1 = a[1][i][j];
+        double aw1 = a[2][i][j];
+        double an1 = a[3][i][j];
+        double as1 = a[4][i][j];
+        int iw = (i > GC     )? i-1 : GC+CX-1;
+        int ie = (i < GC+CX-1)? i+1 : GC     ;
+        int js = (j > GC     )? j-1 : GC+CY-1;
+        int jn = (j < GC+CY-1)? j+1 : GC     ;
+        double xcc = x[i][j];
+        double xe1 = x[ie][j];
+        double xw1 = x[iw][j];
+        double xn1 = x[i][jn];
+        double xs1 = x[i][js];
+        ax[i][j] = acc*xcc + ae1*xe1 + aw1*xw1 + an1*xn1 + as1*xs1;
+    }}
+}
+
+double dot_product(double a[CCX][CCY], double b[CCX][CCY]) {
+    double sum = 0;
+    #pragma acc parallel loop independent reduction(+:sum) collapse(2) present(a, b)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        sum += a[i][j]*b[i][j];
+    }}
+    return sum;
 }
 
 double calc_norm2sq(double vec[CCX][CCY]) {
@@ -244,6 +301,119 @@ void sor_poisson(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], 
         }}
         calc_res(a, x, b, sorvar.r);
         LS_ERR = sqrt(calc_norm2sq(sorvar.r)/CXY);
+        if (LS_ERR < LS_EPS) {
+            break;
+        }
+    }
+}
+
+void sor_preconditioner(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], int maxiter) {
+    for (int iter = 1; iter <= maxiter; iter ++) {
+        #pragma acc parallel loop independent collapse(2) present(a, x, b)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+            rbsor_core(a, x, b, i, j, 0);
+        }}
+        #pragma acc parallel loop independent collapse(2) present(a, x, b)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+            rbsor_core(a, x, b, i, j, 1);
+        }}
+    }
+}
+
+void jacobi_preconditioner(double a[5][CCX][CCY], double x[CCX][CCY], double xp[CCX][CCY], double b[CCX][CCY], int maxiter) {
+    for (int iter = 1; iter <= maxiter; iter ++) {
+        #pragma acc parallel loop independent collapse(2) present(a, x, xp, b)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+            jacobi_core(a, x, xp, b, i, j);
+        }}
+    }
+}
+
+void set_field(double vec[CCX][CCY], double value) {
+    #pragma acc parallel loop independent collapse(2) present(vec) firstprivate(value)
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+        vec[i][j] = value;
+    }}
+}
+
+void copy(double dst[CCX][CCY], double src[CCX][CCY]) {
+    #pragma acc parallel loop independent collapse(2) present(dst, src)
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+        dst[i][j] = src[i][j];
+    }}
+}
+
+void pbicgstab_poisson(LSVars &pcgvar, double x[CCX][CCY]) {
+    calc_res(POIA, x, RHS, pcgvar.r);
+    LS_ERR = sqrt(calc_norm2sq(pcgvar.r)/CXY);
+    copy(pcgvar.rr, pcgvar.r);
+
+    double rho, rrho=1., alpha=1., beta, omega=1.;
+    set_field(pcgvar.q, 0.);
+
+    for (LS_ITER = 1; LS_ITER <= LS_MAXITER; LS_ITER ++) {
+        rho = dot_product(pcgvar.r, pcgvar.rr);
+        if (fabs(rho) < __FLT_MIN__) {
+            LS_ERR = fabs(rho);
+            break;
+        }
+
+        if (LS_ITER == 1) {
+            copy(pcgvar.p, pcgvar.r);
+        } else {
+            beta = (rho*alpha)/(rrho*omega);
+
+            #pragma acc parallel loop independent collapse(2) present(pcgvar, pcgvar.p, pcgvar.q, pcgvar.r) firstprivate(beta, omega)
+            for (int i = GC; i < GC+CX; i ++) {
+            for (int j = GC; j < GC+CY; j ++) {
+                pcgvar.p[i][j] = pcgvar.r[i][j] + beta*(pcgvar.p[i][j] - omega*pcgvar.q[i][j]);
+            }}
+        }
+        
+        set_field(pcgvar.pp, 0.);
+        // sor_preconditioner(POIA, pcgvar.pp, pcgvar.p, 3);
+        jacobi_preconditioner(POIA, pcgvar.pp, pcgvar.xp, pcgvar.p, 3);
+        // periodic_bc(lsvar.pp, 1);
+        calc_ax(POIA, pcgvar.pp, pcgvar.q);
+
+        alpha = rho/dot_product(pcgvar.rr, pcgvar.q);
+
+        #pragma acc parallel loop independent collapse(2) present(pcgvar, pcgvar.s, pcgvar.q, pcgvar.r) firstprivate(alpha)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+            pcgvar.s[i][j] = pcgvar.r[i][j] - alpha*pcgvar.q[i][j];
+        }}
+
+        set_field(pcgvar.ss, 0.);
+        // sor_preconditioner(POIA, pcgvar.ss, pcgvar.s, 3);
+        jacobi_preconditioner(POIA, pcgvar.ss, pcgvar.xp, pcgvar.s, 3);
+        // periodic_bc(lsvar.ss, 1);
+        calc_ax(POIA, pcgvar.ss, pcgvar.t);
+
+        omega = dot_product(pcgvar.t, pcgvar.s)/dot_product(pcgvar.t, pcgvar.t);
+
+        #pragma acc parallel loop independent collapse(2) present(x, pcgvar, pcgvar.pp, pcgvar.ss) firstprivate(alpha, omega)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+            x[i][j] += alpha*pcgvar.pp[i][j] + omega*pcgvar.ss[i][j];
+        }}
+        // periodic_bc(x, 1);
+
+        #pragma acc parallel loop independent collapse(2) present(pcgvar, pcgvar.r, pcgvar.s, pcgvar.t) firstprivate(omega)
+        for (int i = GC; i < GC+CX; i ++) {
+        for (int j = GC; j < GC+CY; j ++) {
+            pcgvar.r[i][j] = pcgvar.s[i][j] - omega*pcgvar.t[i][j];
+        }}
+
+        rrho = rho;
+
+        LS_ERR = sqrt(calc_norm2sq(pcgvar.r)/CXY);
+
         if (LS_ERR < LS_EPS) {
             break;
         }
@@ -326,8 +496,9 @@ int NNX, NNY;
 complex *ffk;
 
 void kforce_core(complex *f, int i, int j) {
-    f[nnidx(i,j)][REAL] = cos(UNI(GEN))*FORCING_EFK;
-    f[nnidx(i,j)][IMAG] = sin(UNI(GEN))*FORCING_EFK;
+    double th = UNI(GEN);
+    f[nnidx(i,j)][REAL] = cos(th)*FORCING_EFK;
+    f[nnidx(i,j)][IMAG] = sin(th)*FORCING_EFK;
 }
 
 void generate_force() {
@@ -372,18 +543,6 @@ void max_cfl() {
     }}
 }
 
-void calc_turb_k() {
-    TURB_K = 0;
-    #pragma acc parallel loop independent reduction(+:TURB_K) collapse(2) present(U)
-    for (int i = GC; i < GC+CX; i ++) {
-    for (int j = GC; j < GC+CY; j ++) {
-        double du = U[0][i][j] - UINFLOW;
-        double dv = U[1][i][j] - VINFLOW;
-        TURB_K += .5*sqrt(du*du + dv*dv);
-    }}
-    TURB_K /= CXY;
-}
-
 void calc_divergence() {
     RMS_DIV = 0;
     #pragma acc parallel loop independent reduction(+:RMS_DIV) collapse(2) present(U)
@@ -403,12 +562,42 @@ void calc_divergence() {
     }}
     RMS_DIV = sqrt(RMS_DIV/CXY);
 }
+void calc_time_avg(int nstep) {
+    #pragma acc parallel loop independent collapse(2) present(U, UAVG) firstprivate(nstep)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        UAVG[0][i][j] = ((nstep - 1)*UAVG[0][i][j] + U[0][i][j])/nstep;
+        UAVG[1][i][j] = ((nstep - 1)*UAVG[1][i][j] + U[1][i][j])/nstep;
+    }}
+}
+
+void calc_perturbation() {
+    #pragma acc parallel loop independent collapse(2) present(U, UAVG, UPER)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        UPER[0][i][j] = U[0][i][j] - UAVG[0][i][j];
+        UPER[1][i][j] = U[1][i][j] - UAVG[1][i][j];
+    }}
+}
+
+void calc_turb_k() {
+    TURB_K = 0;
+    #pragma acc parallel loop independent reduction(+:TURB_K) collapse(2) present(U) 
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        double du = U[0][i][j] - UINFLOW;
+        double dv = U[1][i][j] - VINFLOW;
+        TURB_K += .5*sqrt(du*du + dv*dv);
+    }}
+    TURB_K /= CXY;
+}
 
 void main_loop() {
     generate_force();
     prediction();
     periodic_bc(OMG, 2);
     sor_poisson(POIA, PSI, RHS, lsvar);
+    // pbicgstab_poisson(lsvar, PSI);
     psi_centralize();
     periodic_bc(PSI, 2);
     psi2u();
@@ -420,7 +609,7 @@ void main_loop() {
 }
 
 void output_field(int n) {
-    #pragma acc update self(U, OMG, PSI, FF)
+    #pragma acc update self(U,UAVG, OMG, PSI, FF)
     char fname[128];
     sprintf(fname, "data/vorteq.csv.%d", n);
     FILE *file = fopen(fname, "w");
@@ -466,16 +655,26 @@ int main() {
     make_eq();
     printf("max diag = %lf\n", 1./MAXDIAGI);
     // generate_force();
+    FILE *statistics_file = fopen("data/statistics.csv", "w");
+    fprintf(statistics_file, "t,k,kavg\n");
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
-        if (ISTEP%int(1./DT) == 0 && ISTEP >= int(OUPUT_START/DT)) {
-            output_field(ISTEP/int(1./DT));
+        printf("\r%9d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_AVG, MAX_CFL);
+        fflush(stdout);
+        if (ISTEP%int(OUTPUT_INTERVAL/DT) == 0 && ISTEP >= int(OUPUT_START/DT)) {
+            output_field(ISTEP/int(OUTPUT_INTERVAL/DT));
             printf("\n");
         }
-        printf("\r%8d, %9.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_AVG, TURB_I, TURB_I_AVG, MAX_CFL);
-        fflush(stdout);
+        if (ISTEP >= int(STATIC_AVG_START/DT)) {
+            int nstep = ISTEP - int(STATIC_AVG_START/DT) + 1;
+            TURB_K_AVG = ((nstep - 1)*TURB_K_AVG + TURB_K)/nstep;
+            if (ISTEP%int(OUTPUT_INTERVAL/DT) == 0) {
+                fprintf(statistics_file, "%12.5e,%12.5e,%12.5e\n", gettime(), TURB_K, TURB_K_AVG);
+            }
+        }
     }
     printf("\n");
+    fclose(statistics_file);
 
     #pragma acc exit data delete(ffk[0:NNX*NNY])
     finalize_env();
