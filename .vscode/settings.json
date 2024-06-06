@@ -76,6 +76,12 @@
         "mprealsupport": "cpp",
         "__locale": "cpp",
         "__nullptr": "cpp",
-        "codecvt": "cpp"
+        "codecvt": "cpp",
+        "locale": "cpp",
+        "__bit_reference": "cpp",
+        "__functional_base": "cpp",
+        "__node_handle": "cpp",
+        "__memory": "cpp",
+        "filesystem": "cpp"
     }
 }

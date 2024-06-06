@@ -39,7 +39,7 @@ const static double REI  = 1./RE;
 const static double SOR_OMEGA   = 1.2;
 int                 LS_ITER;
 const static int    LS_MAXITER = 1000;
-const static double LS_EPS     = 1e-4;
+const static double LS_EPS     = 1e-3;
 double              LS_ERR;
 int                 ISTEP;
 const static double MAXT        = 1500.;
@@ -59,8 +59,8 @@ int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 10.;
 const static double HIGH_PASS = 5.;
-const static double FORCING_EFK = 3;
-const static double K = 3e-2;
+const static double FORCING_EFK = 1;
+const static double K = 1e-2;
 
 const static double UINFLOW = 0.;
 const static double VINFLOW = 0.;

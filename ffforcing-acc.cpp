@@ -162,7 +162,7 @@ double advection_core(double phi[CCX][CCY][CCZ], double u[CCX][CCY][CCZ], double
     double aS = vS*phi1yS;
     double aT = wT*phi1zT;
     double aB = wB*phi1zB;
-    double adv = (.5*(aE + aW + aN + aS + aT + aB) + (fabs(ucc)*phi4xcc + fabs(vcc)*phi4ycc + fabs(wcc)*phi4zcc))/24.;
+    double adv = (.5*(aE + aW + aN + aS + aT + aB) + (fabs(ucc)*phi4xcc*DXI + fabs(vcc)*phi4ycc*DYI + fabs(wcc)*phi4zcc*DZI))/24.;
     return adv;
 }
 
