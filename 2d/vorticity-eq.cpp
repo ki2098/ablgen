@@ -58,7 +58,7 @@ int                 TAVG_NSTEP = 0;
 int                 STATIC_NSTEP = 0;
 
 const static double LOW_PASS = 10.;
-const static double HIGH_PASS = 5.;
+const static double HIGH_PASS = 7.;
 const static double FORCING_EFK = 1;
 const static double K = 1e-2;
 
