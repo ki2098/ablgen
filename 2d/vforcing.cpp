@@ -16,7 +16,7 @@ const static double PI = M_PI;
 
 const static int CX = 100;
 const static int CY = 100;
-const static int GC = 3;
+const static int GC = 2;
 const static int CXY = CX*CY;
 const static int CCX = CX+2*GC;
 const static int CCY = CY+2*GC;
@@ -43,9 +43,9 @@ const static double LS_EPS = 1e-3;
 double LS_ERR;
 
 int ISTEP;
-const static double MAXT        = 1000.;
-const static double STATIC_AVG_START =500.;
-const static double OUPUT_START = 900.;
+const static double MAXT        = 750.;
+const static double STATIC_AVG_START =300.;
+const static double OUPUT_START = 740.;
 const static double OUTPUT_INTERVAL=1.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
@@ -61,6 +61,9 @@ const static double DRAG = 1e-2*FORCING_EFK;
 
 const static double UINFLOW = 0.5;
 const static double VINFLOW = 0.;
+
+const static int OUTPUT_OUTFLOW_OUTER = 1;
+const static int OUTPUT_OUTFLOW_INNER = GC;
 
 double MAX_CFL;
 
@@ -83,6 +86,51 @@ const static int NNX = int(LOW_PASS*LX/(2*PI)) + 1;
 const static int NNY = int(LOW_PASS*LY/(2*PI)) + 1;
 
 complex FF[NNX][NNY] = {};
+
+struct BoundaryOutputHandler {
+    FILE *file;
+    int output_start_x, output_size_x;
+    int output_start_y, output_size_y;
+    int output_snapshot_numbers;
+    double mainstream_u, mainstream_v;
+
+    void init(int startx, int sizex, int starty, int sizey, double mainu, double mainv, string fname) {
+        file = fopen(fname.c_str(), "wb");
+        output_snapshot_numbers = 0;
+        output_start_x = startx;
+        output_size_x = sizex;
+        output_start_y = starty;
+        output_size_y = sizey;
+        mainstream_u = mainu;
+        mainstream_v = mainv;
+        int nvar = 2;
+        fwrite(&output_size_x, sizeof(int), 1, file);
+        fwrite(&output_size_y, sizeof(int), 1, file);
+        fwrite(&nvar, sizeof(int), 1, file);
+        fwrite(&output_snapshot_numbers, sizeof(int), 1, file);
+        fwrite(&mainstream_u, sizeof(double), 1, file);
+        fwrite(&mainstream_v, sizeof(double), 1, file);
+    }
+
+    void write(double u[2][CCX][CCY]) {
+        for (int i = output_start_x; i < output_start_x + output_size_x; i ++) {
+        for (int j = output_start_y; j < output_start_y + output_size_y; j ++) {
+            fwrite(&u[0][i][j], sizeof(double), 1, file);
+        }}
+        for (int i = output_start_x; i < output_start_x + output_size_x; i ++) {
+        for (int j = output_start_y; j < output_start_y + output_size_y; j ++) {
+            fwrite(&u[1][i][j], sizeof(double), 1, file);
+        }}
+        output_snapshot_numbers ++;
+    }
+
+    void finalize() {
+        fseek(file, sizeof(int)*3, SEEK_SET);
+        fwrite(&output_snapshot_numbers, sizeof(int), 1, file);
+        fclose(file);
+        printf("boundary output=%dx%dx%dx%d, mainstream u=(%lf,%lf)\n", output_size_x, output_size_y, 2, output_snapshot_numbers, mainstream_u, mainstream_v);
+    }
+} boundaryOutput;
 
 struct LSVAR {
     double   xp[CCX][CCY]={};
@@ -538,16 +586,16 @@ void max_cfl() {
 void main_loop() {
     generate_force();
     prediction();
-    periodic(OMEGA, 2);
+    periodic(OMEGA, GC);
 
     // sor_poisson(PMAT, PSI, RHS, lsvar);
     pbicgstab_poisson(PMAT, PSI, RHS, lsvar);
     field_centralize(PSI);
-    periodic(PSI, 2);
+    periodic(PSI, GC);
 
     psi2u();
-    periodic(U[0], 2);
-    periodic(U[1], 2);
+    periodic(U[0], GC);
+    periodic(U[1], GC);
 
     calc_divergence();
     calc_turb_k();
@@ -608,6 +656,8 @@ int main() {
     printf("Forcing coefficient=%lf\n", FORCING_EFK);
     printf("Drag coefficient=%lf\n", DRAG);
 
+    boundaryOutput.init(GC+CX-2, 3, GC, CY, UINFLOW, VINFLOW, "data/inflow_boundary");
+
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
         printf("\r%9d, %10.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_AVG, MAX_CFL);
@@ -616,8 +666,14 @@ int main() {
             output_field(ISTEP/int(OUTPUT_INTERVAL/DT));
             printf("\n");
         }
+        if (ISTEP >= int(OUPUT_START/DT)) {
+            #pragma acc update self(U)
+            boundaryOutput.write(U);
+        }
     }
 
     finalize_env();
+    boundaryOutput.finalize();
+
     return 0;
 }

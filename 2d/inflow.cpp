@@ -7,144 +7,173 @@
 #include <cuda_runtime.h>
 #include <random>
 
-random_device RD;
-default_random_engine GEN(RD());
-normal_distribution<double> GAUSS(0., 1.);
-uniform_real_distribution<double> UNI(0., 2*PI);
-
-typedef double complex[2];
-const static int REAL = 0;
-const static int IMAG = 1;
-
-using namespace std;
-const static double PI = M_PI;
-
-const static int GC = 2;
-const static double UINFLOW = 0.5;
-const static double VINFLOW = 0.;
-
-template<typename T>
-inline T sq(T a) {
-    return a*a;
-}
-
 struct CommParam {
-const static double RE = 1e4;
-const static double REI = 1./RE;
-
-const static double SOR_OMEGA = 1.2;
-const static int LS_MAXITER = 1000;
-const static double LS_EPS = 1e-3;
+    static const double RE = 1e4;
+    static const double REI = 1./RE;
+    static const double SOR_OMEGA = 1.2;
+    static const double LS_EPS = 1e-3;
+    static const int LS_MAXIRER = 1000;
 };
 
-struct Precursor {
-    const static int CX = 100;
-    const static int CY = 100;
-    const static int CXYNUM = CX*CY;
-    const static int CCX = CX+2*GC;
-    const static int CCY = CY+2*GC;
-    const static int CCXYNUM = CCX*CCY;
-    const static double LX = 5;
-    const static double LY = 5;
-    const static double DX = LX/CX;
-    const static double DY = LY/CY;
-    const static double DXI = 1./DX;
-    const static double DYI = 1./DY;
-    const static double DDXI = DXI*DXI;
-    const static double DDYI = DYI*DYI;
+static inline int id(int i, int j, int jmax) {
+    return i*jmax + j;
+}
 
+struct geomInfo_t {
+    int gc = 2;
+    int cx, cy;
+    int ccx, ccy;
+    double lx, ly;
+    double dx, dy, dxi, dyi;
+    double ddx, ddy, ddxi, ddyi;
 
-    const static double LOW_PASS = 10;
-    const static double HIGH_PASS = 7;
-    const static double FORCING_EFK = 2;
-    const static double DRAG = 1e-2*FORCING_EFK;
-
-    double X[CCX] = {};
-    double Y[CCY] = {};
-    double U[2][CCX][CCY] = {};
-    double OMEGA[CCX][CCY] = {};
-    double OMEGAP[CCX][CCY] = {};
-    double PSI[CCX][CCY] = {};
-    double PMAT[5][CCX][CCY] = {};
-    double RHS[CCX][CCY] = {};
-    double F[CCX][CCY] = {};
-
-    const static int NNX = int(LOW_PASS*LX/(2*PI)) + 1;
-    const static int NNY = int(LOW_PASS*LY/(2*PI)) + 1;
-
-    complex FF[NNX][NNY] = {};
-
-    struct LSVAR {
-        double   xp[CCX][CCY]={};
-        double    r[CCX][CCY]={};
-        double   r0[CCX][CCY]={};
-        double    p[CCX][CCY]={};
-        double    q[CCX][CCY]={};
-        double    s[CCX][CCY]={};
-        double   pp[CCX][CCY]={};
-        double   ss[CCX][CCY]={};
-        double    t[CCX][CCY]={};
-
-        void init() {
-            #pragma acc enter data copyin(this[:1], xp, r, r0, p, q, s, pp, ss, t)
-        }
-
-        void finalize() {
-            #pragma acc exit data delete(this[:1], xp, r, r0, p, q, s, pp, ss, t)
-        }
-    } lsvar;
-
-    void init_env() {
-        #pragma acc enter data copyin(X, Y, U, OMEGA, OMEGAP, PSI, PMAT, RHS, F, FF)
-        lsvar.init();
+    int ccnum() const {
+        return ccx*ccy;
     }
 
-    void finalize_env() {
-        lsvar.finalize();
-        #pragma acc exit data delete(X, Y, U, OMEGA, OMEGAP, PSI, PMAT, RHS, F, FF)
+    int cnum() const {
+        return cx*cy;
     }
+};
 
-    void copy_field(double dst[CCX][CCY], double src[CCX][CCY]) {
-        #pragma acc parallel loop independent collapse(2) present(dst, src)
-        for (int i = 0; i < CCX; i ++) {
-        for (int j = 0; j < CCY; j ++) {
-            dst[i][j] = src[i][j];
+struct lsInfo_t {
+    int iter;
+    int error;
+};
+
+double diffusion_core(double *phi, int *stencil, int i, int j, const geomInfo_t *geom) {
+    const int &ccy = geom->ccy;
+    const int ccn = geom->ccnum();
+    int idc = id(i,j,ccy);
+    int ide = stencil[id(1,idc,ccn)];
+    int idw = stencil[id(3,idc,ccn)];
+    int idn = stencil[id(5,idc,ccn)];
+    int ids = stencil[id(7,idc,ccn)];
+    double phic = phi[idc];
+    double phie = phi[ide];
+    double phiw = phi[idw];
+    double phin = phi[idn];
+    double phis = phi[ids];
+    double dx2 = geom->ddxi*(phie - 2*phic + phiw);
+    double dy2 = geom->ddyi*(phin - 2*phic + phis);
+    return CommParam::REI*(dx2 + dy2);
+}
+
+double kk_advection_core(double *phi, double *u, int *stencil, int i, int j, const geomInfo_t *geom) {
+    const int &ccy = geom->ccy;
+    const int ccn = geom->ccnum();
+    int idcc = id(i,j,ccy);
+    int ide1 = stencil[id(1,idcc,ccn)];
+    int ide2 = stencil[id(2,idcc,ccn)];
+    int idw1 = stencil[id(3,idcc,ccn)];
+    int idw2 = stencil[id(4,idcc,ccn)];
+    int idn1 = stencil[id(5,idcc,ccn)];
+    int idn2 = stencil[id(6,idcc,ccn)];
+    int ids1 = stencil[id(7,idcc,ccn)];
+    int ids2 = stencil[id(8,idcc,ccn)];
+    double phicc = phi[idcc];
+    double phie1 = phi[ide1];
+    double phie2 = phi[ide2];
+    double phiw1 = phi[idw1];
+    double phiw2 = phi[idw2];
+    double phin1 = phi[idn1];
+    double phin2 = phi[idn2];
+    double phis1 = phi[ids1];
+    double phis2 = phi[ids2];
+    double ucc = u[id(0,idcc,ccn)];
+    double vcc = u[id(1,idcc,ccn)];
+    const double &dxi = geom->dxi;
+    const double &dyi = geom->dyi;
+    double dx1 = ucc*dxi*(- phie2 + 8*phie1 - 8*phiw1 + phiw2)/12.;
+    double dx4 = fabs(ucc)*dxi*.25*(phie2 - 4*phie1 + 6*phicc - 4*phiw1 + phiw2);
+    double dy1 = vcc*dyi*(- phin2 + 8*phin1 - 8*phis1 + phis2)/12.;
+    double dy4 = fabs(vcc)*dyi*.25*(phin2 - 4*phin1 + 6*phicc - 4*phis1 + phis2);
+    return dx1 + dx4 + dy1 + dy4;
+}
+
+double riam_adveciton_core(double *phi, double *u, double *uu, int *stencil, int i, int j, const geomInfo_t *geom) {
+    const int &ccy = geom->ccy;
+    const int ccn = geom->ccnum();
+    int idcc = id(i,j,ccy);
+    int ide1 = stencil[id(1,idcc,ccn)];
+    int ide2 = stencil[id(2,idcc,ccn)];
+    int idw1 = stencil[id(3,idcc,ccn)];
+    int idw2 = stencil[id(4,idcc,ccn)];
+    int idn1 = stencil[id(5,idcc,ccn)];
+    int idn2 = stencil[id(6,idcc,ccn)];
+    int ids1 = stencil[id(7,idcc,ccn)];
+    int ids2 = stencil[id(8,idcc,ccn)];
+    double phicc = phi[idcc];
+    double phie1 = phi[ide1];
+    double phie2 = phi[ide2];
+    double phiw1 = phi[idw1];
+    double phiw2 = phi[idw2];
+    double phin1 = phi[idn1];
+    double phin2 = phi[idn2];
+    double phis1 = phi[ids1];
+    double phis2 = phi[ids2];
+    double ucc = u[id(0,idcc,ccn)];
+    double vcc = u[id(1,idcc,ccn)];
+    double uue = uu[id(0,idcc,ccn)];
+    double uuw = uu[id(0,idw1,ccn)];
+    double vvn = uu[id(1,idcc,ccn)];
+    double vvs = uu[id(1,ids1,ccn)];
+    const double &dxi = geom->dxi;
+    const double &dyi = geom->dyi;
+    double dx1e = (- phie2 + 27*phie1 - 27*phicc + phiw1)*dxi*uue;
+    double dx1w = (- phie1 + 27*phicc - 27*phiw1 + phiw2)*dxi*uuw;
+    double dy1n = (- phin2 + 27*phin1 - 27*phicc + phis1)*dyi*vvn;
+    double dy1s = (- phin1 + 27*phicc - 27*phis1 + phis2)*dyi*vvs;
+    double dx4 = (phie2 -4*phie1 + 6*phicc - 4*phiw1 + phiw2)*dxi*fabs(ucc);
+    double dy4 = (phin2 -4*phin1 + 6*phicc - 4*phis1 + phis2)*dyi*fabs(vcc);
+    return (.5*(dx1e + dx1w + dy1n + dy1s) + (dx4 + dy4))/24;
+}
+
+double rbsor_core(double *a, double *x, double *b, int *stencil, int i, int j, const geomInfo_t *geom, int color) {
+    if ((i + j)%2 == color) {
+        const int &ccy = geom->ccy;
+        const int ccn = geom->ccnum();
+        int idc = id(i,j,ccy);
+        int ide = stencil[id(1,idc,ccn)];
+        int idw = stencil[id(3,idc,ccn)];
+        int idn = stencil[id(5,idc,ccn)];
+        int ids = stencil[id(7,idc,ccn)];
+        double ac = a[id(0,idc,ccn)];
+        double ae = a[id(1,idc,ccn)];
+        double aw = a[id(3,idc,ccn)];
+        double an = a[id(5,idc,ccn)];
+        double as = a[id(7,idc,ccn)];
+        double xc = x[idc];
+        double xe = x[ide];
+        double xw = x[idw];
+        double xn = x[idn];
+        double xs = x[ids];
+        double cc = (b[idc] - (ac*xc + ae*xe + aw*xw + an*xn + as*xs))/ac;
+        x[idc] = xc + CommParam::SOR_OMEGA*cc;
+        return cc*cc;
+    } else {
+        return 0;
+    }
+}
+
+double sor_poisson(double *a, double *x, double *b, double *r, int *stencil, const geomInfo_t *geom, lsInfo_t *solver) {
+    int ccn = geom->ccnum();
+    for (solver->iter = 1; solver->iter <= CommParam::LS_MAXIRER; solver->iter ++) {
+        #pragma acc parallel loop independent collapse(2) present(a[:ccn*5], x[:ccn], b[:ccn], stencil[:ccn*9], geom[:1])
+        for (int i = geom->gc; i < geom->gc + geom->cx; i ++) {
+        for (int j = geom->gc; j < geom->gc + geom->cy; j ++) {
+            rbsor_core(a, x, b, stencil, i, j, geom, 0);
+        }}
+        #pragma acc parallel loop independent collapse(2) present(a[:ccn*5], x[:ccn], b[:ccn], stencil[:ccn*9], geom[:1])
+        for (int i = geom->gc; i < geom->gc + geom->cx; i ++) {
+        for (int j = geom->gc; j < geom->gc + geom->cy; j ++) {
+            rbsor_core(a, x, b, stencil, i, j, geom, 1);
         }}
     }
-
-    double advection_core(double phi[CCX][CCY], double u[CCX][CCY], double v[CCX][CCY], int i, int j) {
-        double phicc = phi[i][j];
-        double phie1 = phi[i+1][j];
-        double phie2 = phi[i+2][j];
-        double phiw1 = phi[i-1][j];
-        double phiw2 = phi[i-2][j];
-        double phin1 = phi[i][j+1];
-        double phin2 = phi[i][j+2];
-        double phis1 = phi[i][j-1];
-        double phis2 = phi[i][j-2];
-        double uc = u[i][j];
-        double vc = v[i][j];
-        double dx1 = uc*DXI*(- phie2 + 8*phie1 - 8*phiw1 + phiw2)/12.;
-        double dx4 = fabs(uc)*DXI*.25*(phie2 - 4*phie1 + 6*phicc - 4*phiw1 + phiw2);
-        double dy1 = vc*DYI*(- phin2 + 8*phin1 - 8*phis1 + phis2)/12.;
-        double dy4 = fabs(vc)*DYI*.25*(phin2 - 4*phin1 + 6*phicc - 4*phis1 + phis2);
-        return dx1 + dx4 + dy1 + dy4;
-    }
-
-    double diffusion_core(double phi[CCX][CCY], int i, int j) {
-        double dx2 = DDXI*(phi[i+1][j] - 2*phi[i][j] + phi[i-1][j]);
-        double dy2 = DDYI*(phi[i][j+1] - 2*phi[i][j] + phi[i][j-1]);
-        return CommParam::REI*(dx2 + dy2);
-    }
-
-    void prediction();
-};
-
-
-void Precursor::prediction() {
-    copy_field(OMEGAP, OMEGA);
-    for (int i = GC; i < GC+CX; i ++) {
-    for (int j = GC; j < GC+CY; j ++) {
-
-    }}
 }
+
+
+
+
+
+

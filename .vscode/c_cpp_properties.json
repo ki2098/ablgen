@@ -5,9 +5,9 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "/usr/local/fftw3/include",
-                "/opt/nvidia/hpc_sdk/Linux_x86_64/2024/cuda/include",
-                "/opt/nvidia/hpc_sdk/Linux_x86_64/2024/math_libs/include",
-                "/opt/nvidia/hpc_sdk/Linux_x86_64/2024/comm_libs/12.3/openmpi4/latest/include"
+                "/opt/nvidia/hpc_sdk/Linux_x86_64/2023/cuda/include",
+                "/opt/nvidia/hpc_sdk/Linux_x86_64/2023/math_libs/include",
+                "/opt/nvidia/hpc_sdk/Linux_x86_64/2023/comm_libs/12.2/openmpi4/latest/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
