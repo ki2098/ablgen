@@ -43,9 +43,9 @@ const static double LS_EPS = 1e-3;
 double LS_ERR;
 
 int ISTEP;
-const static double MAXT        = 750.;
-const static double STATIC_AVG_START =300.;
-const static double OUPUT_START = 740.;
+const static double MAXT        = 1000.;
+const static double STATIC_AVG_START =500.;
+const static double OUTPUT_START = 900.;
 const static double OUTPUT_INTERVAL=1.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
@@ -56,7 +56,7 @@ double              TURB_K, TURB_K_AVG=0.;
 
 const static double LOW_PASS = 10;
 const static double HIGH_PASS = 7;
-const static double FORCING_EFK = 2;
+const static double FORCING_EFK = 1;
 const static double DRAG = 1e-2*FORCING_EFK;
 
 const static double UINFLOW = 0.5;
@@ -130,7 +130,7 @@ struct BoundaryOutputHandler {
         fclose(file);
         printf("boundary output=%dx%dx%dx%d, mainstream u=(%lf,%lf)\n", output_size_x, output_size_y, 2, output_snapshot_numbers, mainstream_u, mainstream_v);
     }
-} boundaryOutput;
+} boundaryOutput, initialOutput;
 
 struct LSVAR {
     double   xp[CCX][CCY]={};
@@ -608,8 +608,8 @@ void output_field(int n) {
     sprintf(fname, "data/vforcing.csv.%d", n);
     FILE *file = fopen(fname, "w");
     fprintf(file, "x,y,z,u,v,w,vorticity,psi,f\n");
-    for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
+    for (int i = GC; i < GC+CX; i ++) {
         fprintf(file, "%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e\n", X[i], Y[j], 0., U[0][i][j], U[1][i][j], 0., OMEGA[i][j], PSI[i][j], F[i][j]);
     }}
     fclose(file);
@@ -656,19 +656,28 @@ int main() {
     printf("Forcing coefficient=%lf\n", FORCING_EFK);
     printf("Drag coefficient=%lf\n", DRAG);
 
-    boundaryOutput.init(GC+CX-2, 3, GC, CY, UINFLOW, VINFLOW, "data/inflow_boundary");
+    boundaryOutput.init(0, 3, GC, CY, UINFLOW, VINFLOW, "data/inflow_boundary");
+    initialOutput.init(0, CCX, 0, CCY, UINFLOW, VINFLOW, "data/initial_field");
 
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
         printf("\r%9d, %10.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_AVG, MAX_CFL);
         fflush(stdout);
-        if (ISTEP%int(OUTPUT_INTERVAL/DT) == 0 && ISTEP >= int(OUPUT_START/DT)) {
+        if (ISTEP%int(OUTPUT_INTERVAL/DT) == 0 && ISTEP >= int(OUTPUT_START/DT)) {
             output_field(ISTEP/int(OUTPUT_INTERVAL/DT));
             printf("\n");
         }
-        if (ISTEP >= int(OUPUT_START/DT)) {
+        if (ISTEP >= int(OUTPUT_START/DT)) {
             #pragma acc update self(U)
             boundaryOutput.write(U);
+            if (ISTEP == int(OUTPUT_START/DT)) {
+                initialOutput.write(U);
+                initialOutput.finalize();
+            }
+        }
+        if (ISTEP >= int(STATIC_AVG_START/DT)) {
+            int nstep = ISTEP - int(STATIC_AVG_START/DT) + 1;
+            TURB_K_AVG = ((nstep - 1)*TURB_K_AVG + TURB_K)/nstep;
         }
     }
 

@@ -45,7 +45,7 @@ double LS_ERR;
 int ISTEP;
 const static double MAXT        = 1000.;
 const static double STATIC_AVG_START =500.;
-const static double OUPUT_START = 900.;
+const static double OUTPUT_START = 900.;
 const static double OUTPUT_INTERVAL=1.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
@@ -659,7 +659,7 @@ int main() {
         main_loop();
         printf("\r%9d, %10.5lf, %3d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, TURB_K, TURB_K_AVG, MAX_CFL);
         fflush(stdout);
-        if (ISTEP%int(OUTPUT_INTERVAL/DT) == 0 && ISTEP >= int(OUPUT_START/DT)) {
+        if (ISTEP%int(OUTPUT_INTERVAL/DT) == 0 && ISTEP >= int(OUTPUT_START/DT)) {
             output_field(ISTEP/int(OUTPUT_INTERVAL/DT));
             printf("\n");
         }
