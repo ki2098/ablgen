@@ -4,32 +4,31 @@
 #include <cstring>
 #include <math.h>
 #include <cuda.h>
-#include <cuda_runtime.h>
-#include <random>
 #include <vector>
+#include <cuda_runtime.h>
 
 using namespace std;
 const static double PI = M_PI;
 
-const static int DivisionX = 750;
-const static int DivisionY = 500;
-const static int CX = DivisionX-1;
-const static int CY = DivisionY;
+const static int DivisionX = 500;
+const static int DivisionY = 200;
+const static int CX = DivisionX;
+const static int CY = DivisionY-1;
 const static int GC = 2;
 const static int CXY = CX*CY;
 const static int CCX = CX+2*GC;
 const static int CCY = CY+2*GC;
 const static int CCXY = CCX*CCY;
 
-const static double LX = 15;
-const static double LY = 10;
+const static double LX = 5;
+const static double LY = 2;
 const static double DX = LX/DivisionX;
 const static double DY = LY/DivisionY;
 const static double DXI = 1./DX;
 const static double DYI = 1./DY;
 const static double DDXI = DXI*DXI;
 const static double DDYI = DYI*DYI;
-const static double DT = 5e-4;
+const static double DT = 2e-4;
 const static double DTI = 1./DT;
 
 const static double RE = 1e4;
@@ -42,8 +41,8 @@ const static double LS_EPS = 1e-3;
 double LS_ERR;
 
 int ISTEP;
-const static double MAXT        = 25.;
-const static double OUTPUT_START = 0.;
+const static double MAXT        = 50.;
+const static double OUTPUT_START = 25.;
 const static double OUTPUT_INTERVAL=1.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
@@ -52,6 +51,15 @@ double              MAX_CFL;
 
 const static double C_SMAGORINSKY = 0.1;
 
+const static int    GRID_NUM = 21;
+const static double GRID_THICKNESS_X = 0.05;
+const static double GRID_THICKNESS_Y = 0.0205;
+double GRID_X[GRID_NUM];
+double GRID_Y[GRID_NUM];
+
+double P_DRIVER = 0;
+double P_DRIVER_COEFFICIENT = 1.;
+
 double gettime() {
     return ISTEP*DT;
 }
@@ -59,6 +67,15 @@ double gettime() {
 template<typename T>
 inline T sq(T a) {
     return a*a;
+}
+
+void periodic_x(double field[CCX][CCY], int margin, double df) {
+    #pragma acc parallel loop independent collapse(2) present(field) firstprivate(margin, df)
+    for (int j = 0; j < CCY; j ++) {
+    for (int offset = 0; offset < margin; offset ++) {
+        field[GC- 1-offset][j] = field[GC+CX-1-offset][j] - df;
+        field[GC+CX+offset][j] = field[GC     +offset][j] + df;
+    }}
 }
 
 void set_field(double dst[CCX][CCY], double value) {
@@ -77,197 +94,6 @@ void copy_field(double dst[CCX][CCY], double src[CCX][CCY]) {
     }}
 }
 
-struct FileHandler {
-    size_t header_size;
-    int fxn, fyn, fvn, fsn;
-    int xo, yo, xn, yn, vn=2;
-    double *data;
-    double *x, *y;
-    FILE *file;
-    double mainstream_u, mainstream_v;
-
-    int id(int n, int i, int j) {
-        return n*fxn*fyn + i*fyn + j;
-    }
-
-    void init(int _xo, int _yo, int _xn, int _yn, string fname) {
-        xo = _xo;
-        yo = _yo;
-        xn = _xn;
-        yn = _yn;
-        file = fopen(fname.c_str(), "rb");
-        fread(&fxn, sizeof(int), 1, file);
-        fread(&fyn, sizeof(int), 1, file);
-        fread(&fvn, sizeof(int), 1, file);
-        fread(&fsn, sizeof(int), 1, file);
-        fread(&mainstream_u, sizeof(double), 1, file);
-        fread(&mainstream_v, sizeof(double), 1, file);
-        printf("%s: (%d %d %d %d) (%lf %lf)\n", fname.c_str(), fxn, fyn, fvn, fsn, mainstream_u, mainstream_v);
-        data = (double*)malloc(sizeof(double)*fvn*fxn*fyn);
-        x = (double*)malloc(sizeof(double)*fxn);
-        y = (double*)malloc(sizeof(double)*fyn);
-        fread(x, sizeof(double), fxn, file);
-        fread(y, sizeof(double), fyn, file);
-        #pragma acc enter data copyin(this[0:1], x[:fxn], y[:fyn]) create(data[0:fvn*fxn*fyn])
-        header_size = 4*sizeof(int) + (2 + fxn + fyn)*sizeof(double);
-    }
-    
-    void finalize() {
-        #pragma acc exit data delete(data[0:fvn*fxn*fyn], x[:fxn], y[:fyn], this[0:1])
-        free(data);
-        fclose(file);
-    }
-
-    int search_interval(double *c, int size, double p) {
-        if (p < c[0] || p > c[size-1]) {
-            return -1;
-        }
-
-        for (int i = 0; i <= size-2; i ++) {
-            if (c[i] <= p && c[i+1] > p) {
-                return i;
-            }
-        }
-        return size-2;
-    }
-
-    double bilinear_interpolation(double x0, double x1, double y0, double y1, double xc, double yc, double p0, double p1, double p2, double p3) {
-        double ax = (xc - x0)/(x1 - x0);
-        double ay = (yc - y0)/(y1 - y0);
-        double p4 = (1 - ax)*p0 + ax*p1;
-        double p5 = (1 - ax)*p2 + ax*p3;
-        double pc = (1 - ay)*p4 + ay*p5;
-        return pc;
-    }
-
-    void apply(int step, double u[2][CCX][CCY], double xx[CCX], double yy[CCY]) {
-        size_t skip = header_size + sizeof(double)*fvn*fxn*fyn*step;
-        fseek(file, skip, SEEK_SET);
-        fread(data, sizeof(double), fvn*fxn*fyn, file);
-        #pragma acc update device(data[0:fvn*fxn*fyn])
-        #pragma acc parallel loop independent collapse(2) present(this[0:1], u, data[0:fvn*fxn*fyn], x[:fxn], y[:fyn], xx, yy)
-        for (int i = 0; i < xn; i ++) {
-        for (int j = 0; j < yn; j ++) {
-            int ii = i+xo, jj = j+yo;
-            double xc = xx[ii];
-            double yc = yy[jj];
-            int I = search_interval(x, fxn, xc);
-            int J = search_interval(y, fyn, yc);
-            double u0 = data[id(0,I  ,J  )];
-            double u1 = data[id(0,I+1,J  )];
-            double u2 = data[id(0,I  ,J+1)];
-            double u3 = data[id(0,I+1,J+1)];
-            double v0 = data[id(1,I  ,J  )];
-            double v1 = data[id(1,I+1,J  )];
-            double v2 = data[id(1,I  ,J+1)];
-            double v3 = data[id(1,I+1,J+1)];
-            double x0 = x[I  ];
-            double x1 = x[I+1];
-            double y0 = y[J  ];
-            double y1 = y[J+1];
-            u[0][ii][jj] = bilinear_interpolation(x0, x1, y0, y1, xc, yc, u0, u1, u2, u3);
-            u[1][ii][jj] = bilinear_interpolation(x0, x1, y0, y1, xc, yc, v0, v1, v2, v3);
-            // printf("%d %d %lf %lf %d %d\n", ii, jj, xc, yc, I, J);
-
-            // u[0][i+xo][j+yo] = data[id(0,i,j)];
-            // u[1][i+xo][j+yo] = data[id(1,i,j)];
-
-            // if (i%2 == 0 && j%2 == 1) {
-            //     int I = i/2+1;
-            //     int J = j/2;
-            //     u[0][i+xo][j+yo] = data[id(0,I,J)];
-            //     u[1][i+xo][j+yo] = data[id(1,I,J)];
-            // } else if (i%2 == 0 && j%2 == 0) {
-            //     int I = i/2+1;
-            //     int Jup = j/2;
-            //     int Jdown = (Jup == 0)? fyn-1 : Jup-1;
-            //     u[0][i+xo][j+yo] = (data[id(0,I,Jdown)] + data[id(0,I,Jup)])*0.5;
-            //     u[1][i+xo][j+yo] = (data[id(1,I,Jdown)] + data[id(1,I,Jup)])*0.5;
-            // } else if (i%2 == 1 && j%2 == 0) {
-            //     int Iright = i/2+2;
-            //     int Ileft = i/2+1;
-            //     int Jup = j/2;
-            //     int Jdown = (Jup == 0)? fyn-1 : Jup-1;
-            //     u[0][i+xo][j+yo] = .25*(data[id(0,Iright,Jup)] + data[id(0,Iright,Jdown)] + data[id(0,Ileft,Jup)] + data[id(0,Ileft,Jdown)]);
-            //     u[1][i+xo][j+yo] = .25*(data[id(1,Iright,Jup)] + data[id(1,Iright,Jdown)] + data[id(1,Ileft,Jup)] + data[id(1,Ileft,Jdown)]);
-            // } else if (i%2 == 1 && j%2 == 1) {
-            //     int Iright = i/2+2;
-            //     int Ileft = i/2+1;
-            //     int J = j/2;
-            //     u[0][i+xo][j+yo] = 0.5*(data[id(0,Iright,J)] + data[id(0,Ileft,J)]);
-            //     u[1][i+xo][j+yo] = 0.5*(data[id(1,Iright,J)] + data[id(1,Ileft,J)]);
-            // }
-        }}
-    }
-} inflowHandler, initialHandler;
-
-// struct InflowHandler {
-//     int imax, jmax, slicemax;
-//     FILE *file;
-//     double *inflow;
-//     double mainstream_u, mainstream_v;
-
-//     int id(int n, int i, int j) {
-//         return n*imax*jmax + i*jmax + j;
-//     }
-
-//     void init(string fname, double u[2][CCX][CCY]) {
-//         file = fopen(fname.c_str(), "rb");
-//         fread(&imax, sizeof(int), 1, file);
-//         fread(&jmax, sizeof(int), 1, file);
-//         int nvar;
-//         fread(&nvar, sizeof(int), 1, file);
-//         fread(&slicemax, sizeof(int), 1, file);
-//         if (imax != GC + 1) {
-//             printf("!Wrong thickness of inflow layer: %d, it should be %d!\n", imax, GC + 1);
-//         }
-//         if (nvar != 2) {
-//             printf("!Wrong number of variables in inflow file!\n");
-//         }
-//         if (slicemax != int(MAXT/DT) + 1) {
-//             printf("!Wrong number of snapshots in inflow file\n");
-//         }
-//         fread(&mainstream_u, sizeof(double), 1, file);
-//         fread(&mainstream_v, sizeof(double), 1, file);
-
-//         printf("inflow: %dx%dx%dx%d (%lf,%lf)\n", imax, jmax, nvar, slicemax, mainstream_u, mainstream_v);
-        
-//         inflow = (double*)malloc(sizeof(double)*imax*jmax*2);
-//         fread(inflow, sizeof(double), imax*jmax*2, file);
-//         #pragma acc enter data copyin(this[0:1], inflow[0:2*imax*jmax])
-
-//         #pragma acc parallel loop independent collapse(2) present(u, this[0:1])
-//         for (int i = 0; i < CCX; i ++) {
-//         for (int j = 0; j < CCY; j ++) {
-//             u[0][i][j] = mainstream_u;
-//             u[1][i][j] = mainstream_v;
-//         }}
-//         insert_velocity(u);
-//     }
-
-//     void finalize() {
-//         #pragma acc exit data delete(inflow[0:2*imax*jmax], this[0:1])
-//         free(inflow);
-//         fclose(file);
-//     }
-
-//     void read(double u[2][CCX][CCY]) {
-//         fread(inflow, sizeof(double), imax*jmax*2, file);
-//         #pragma acc update device(inflow[0:2*imax*jmax])
-//         insert_velocity(u);
-//     }
-
-//     void insert_velocity(double u[2][CCX][CCY]) {
-//         #pragma acc parallel loop independent collapse(2) present(this[0:1], inflow[:2*imax*jmax], u)
-//         for (int i = 0; i < GC; i ++) {
-//         for (int j = 0; j < jmax; j ++) {
-//             u[0][i][j+GC] = inflow[id(0,i,j)];
-//             u[1][i][j+GC] = inflow[id(1,i,j)];
-//         }}
-//     }
-
-// } inflow_handler;
-
 double X[CCX] = {};
 double Y[CCY] = {};
 double U[2][CCX][CCY] = {};
@@ -277,13 +103,24 @@ double P[CCX][CCY] = {};
 double RHS[CCX][CCY] = {};
 double PMAT[5][CCX][CCY] = {};
 double DIV[CCX][CCY] = {};
+double NUT[CCX][CCY] = {};
+int FLAG[CCX][CCY] = {};
 
 void acc_init() {
-    #pragma acc enter data create(X, Y, U, UU, UP, P, RHS, PMAT, DIV)
+    #pragma acc enter data create(X, Y, U, UU, UP, P, RHS, PMAT, DIV, NUT, FLAG, GRID_X, GRID_Y)
 }
 
 void acc_finalize() {
-    #pragma acc exit data delete(X, Y, U, UU, UP, P, RHS, PMAT, DIV)
+    #pragma acc exit data delete(X, Y, U, UU, UP, P, RHS, PMAT, DIV, NUT, FLAG, GRID_X, GRID_Y)
+}
+
+double outflow_monitor() {
+    double usum = 0;
+    #pragma acc parallel loop independent reduction(+:usum) present(U, FLAG)
+    for (int j = GC; j < GC+CY; j ++) {
+        usum += U[0][GC+CX-1][j];
+    }
+    return usum/CY;
 }
 
 struct LSVAR {
@@ -331,22 +168,30 @@ double advection_core(double phi[CCX][CCY], double u[CCX][CCY], double v[CCX][CC
     return (.5*(dx1e + dx1w + dy1n + dy1s) + (dx4 + dy4))/24;
 }
 
-double diffusion_core(double phi[CCX][CCY], int i, int j) {
+double diffusion_core(double phi[CCX][CCY], double nut[CCX][CCY], int i, int j) {
     double phic = phi[i][j];
     double phie = phi[i+1][j];
     double phiw = phi[i-1][j];
     double phin = phi[i][j+1];
     double phis = phi[i][j-1];
-    return REI*(DDXI*(phie - 2*phic + phiw) + DDYI*(phin - 2*phic + phis));
+    double nute = .5*(nut[i+1][j] + nut[i][j]);
+    double nutw = .5*(nut[i-1][j] + nut[i][j]);
+    double nutn = .5*(nut[i][j+1] + nut[i][j]);
+    double nuts = .5*(nut[i][j-1] + nut[i][j]);
+    double dife = (REI + nute)*DXI*(phie - phic);
+    double difw = (REI + nutw)*DXI*(phic - phiw);
+    double difn = (REI + nutn)*DYI*(phin - phic);
+    double difs = (REI + nuts)*DYI*(phic - phis);
+    return DXI*(dife - difw) + DYI*(difn - difs);
 }
 
 void prediction() {
-    #pragma acc parallel loop independent collapse(2) present(U, UP, UU)
+    #pragma acc parallel loop independent collapse(2) present(U, UP, UU, NUT)
     for (int i = GC; i < GC+CX; i ++) {
     for (int j = GC; j < GC+CY; j ++) {
     for (int d = 0; d < 2; d ++) {
         double advc = advection_core(UP[d], UP[0], UP[1], UU[0], UU[1], i, j);
-        double diff = diffusion_core(UP[d], i, j);
+        double diff = diffusion_core(UP[d], NUT, i, j);
         U[d][i][j] = UP[d][i][j] + DT*(- advc + diff);
     }}}
 }
@@ -354,12 +199,8 @@ void prediction() {
 void interpolation(double max_diag_inverse) {
     #pragma acc parallel loop independent collapse(2) present(U, UU)
     for (int i = GC-1; i < GC+CX; i ++) {
-    for (int j = GC  ; j < GC+CY; j ++) {
-        UU[0][i][j] = .5*(U[0][i][j] + U[0][i+1][j]);
-    }}
-    #pragma acc parallel loop independent collapse(2) present(U, UU)
-    for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC-1; j < GC+CY; j ++) {
+        UU[0][i][j] = .5*(U[0][i][j] + U[0][i+1][j]);
         UU[1][i][j] = .5*(U[1][i][j] + U[1][i][j+1]);
     }}
     #pragma acc parallel loop independent collapse(2) present(UU, RHS) firstprivate(max_diag_inverse)
@@ -381,6 +222,7 @@ double calc_norm2sq(double vec[CCX][CCY]) {
     return sum;
 }
 
+
 void calc_res(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], double r[CCX][CCY]) {
     #pragma acc parallel loop independent collapse(2) present(a, x, b, r)
     for (int i = GC; i < GC+CX; i ++) {
@@ -392,8 +234,8 @@ void calc_res(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], dou
         double as = a[4][i][j];
         int ie = i+1;
         int iw = i-1;
-        int jn = (j < GC+CY-1)? j+1 : GC     ;
-        int js = (j > GC     )? j-1 : GC+CY-1;
+        int jn = j+1;
+        int js = j-1;
         double xc = x[i][j];
         double xe = x[ie][j];
         double xw = x[iw][j];
@@ -412,8 +254,8 @@ double rbsor_core(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY],
         double as = a[4][i][j];
         int ie = i+1;
         int iw = i-1;
-        int jn = (j < GC+CY-1)? j+1 : GC     ;
-        int js = (j > GC     )? j-1 : GC+CY-1;
+        int jn = j+1;
+        int js = j-1;
         double xc = x[i][j];
         double xe = x[ie][j];
         double xw = x[iw][j];
@@ -434,11 +276,13 @@ void sor_poisson(double a[5][CCX][CCY], double x[CCX][CCY], double b[CCX][CCY], 
         for (int j = GC; j < GC+CY; j ++) {
             rbsor_core(a, x, b, i, j, 0);
         }}
+        periodic_x(P, GC, P_DRIVER);
         #pragma acc parallel loop independent collapse(2) present(a, x, b)
         for (int i = GC; i < GC+CX; i ++) {
         for (int j = GC; j < GC+CY; j ++) {
             rbsor_core(a, x, b, i, j, 1);
         }}
+        periodic_x(P, GC, P_DRIVER);
         calc_res(a, x, b, var.r);
         LS_ERR = sqrt(calc_norm2sq(var.r)/CXY);
         if (LS_ERR < LS_EPS) {
@@ -474,12 +318,8 @@ void projection_center() {
 void projection_interface() {
     #pragma acc parallel loop independent collapse(2) present(UU, P)
     for (int i = GC-1; i < GC+CX; i ++) {
-    for (int j = GC  ; j < GC+CY; j ++) {
-        UU[0][i][j] -= DT*DXI*(P[i+1][j] - P[i][j]);
-    }}
-    #pragma acc parallel loop independent collapse(2) present(UU, P)
-    for (int i = GC  ; i < GC+CX; i ++) {
     for (int j = GC-1; j < GC+CY; j ++) {
+        UU[0][i][j] -= DT*DXI*(P[i+1][j] - P[i][j]);
         UU[1][i][j] -= DT*DYI*(P[i][j+1] - P[i][j]);
     }}
 }
@@ -511,53 +351,78 @@ void max_cfl() {
     }}
 }
 
-void periodic_y(double phi[CCX][CCY], int margin) {
-    #pragma acc parallel loop independent collapse(2) present(phi) firstprivate(margin)
-    for (int i = GC; i < GC+CX; i ++) {
-    for (int offset = 0; offset < margin; offset ++) {
-        phi[i][GC- 1-offset] = phi[i][GC+CY-1-offset];
-        phi[i][GC+CY+offset] = phi[i][GC     +offset];
-    }}
-}
-
 void velocity_bc() {
-    inflowHandler.apply(ISTEP, U, X, Y);
-    periodic_y(U[0], GC);
-    periodic_y(U[1], GC);
-    #pragma acc parallel loop independent present(U, UP, inflowHandler)
-    for (int j = GC; j < GC+CY; j ++) {
-        int icc = GC+CX;
-        int ii1 = icc-1;
-        int ii2 = icc-2;
-        int io1 = icc+1;
+    #pragma acc parallel loop independent present(U, FLAG)
+    for (int i = GC; i < GC+CX; i ++) {
+        if (!FLAG[i][GC-1]) {
+            U[0][i][GC-1] = U[0][i][GC  ];
+            U[1][i][GC-1] = 0;
+        }
+        U[0][i][GC-2] = 2*U[0][i][GC-1] - U[0][i][GC];
+        U[1][i][GC-2] = 2*U[1][i][GC-1] - U[1][i][GC];
 
-        double dudx = .5*DXI*(3*UP[0][icc][j] - 4*UP[0][ii1][j] + UP[0][ii2][j]);
-        double dvdx = .5*DXI*(3*UP[1][icc][j] - 4*UP[1][ii1][j] + UP[1][ii2][j]);
-        U[0][icc][j] = UP[0][icc][j] - inflowHandler.mainstream_u*DT*dudx;
-        U[1][icc][j] = UP[1][icc][j] - inflowHandler.mainstream_u*DT*dvdx;
-
-        dudx        = .5*DXI*(3*UP[0][io1][j] - 4*UP[0][icc][j] + UP[0][ii1][j]);
-        dvdx        = .5*DXI*(3*UP[1][io1][j] - 4*UP[1][icc][j] + UP[1][ii1][j]);
-        U[0][io1][j] = UP[0][io1][j] - inflowHandler.mainstream_u*DT*dudx;
-        U[1][io1][j] = UP[1][io1][j] - inflowHandler.mainstream_u*DT*dvdx;
+        if (!FLAG[i][GC+CY]) {
+            U[0][i][GC+CY  ] = U[0][i][GC+CY-1];
+            U[1][i][GC+CY  ] = 0;
+        }
+        U[0][i][GC+CY+1] = 2*U[0][i][GC+CY  ] - U[0][i][GC+CY-1];
+        U[1][i][GC+CY+1] = 2*U[1][i][GC+CY  ] - U[1][i][GC+CY-1];
     }
+    periodic_x(U[0], GC, 0);
+    periodic_x(U[1], GC, 0);
 }
 
 void pressure_bc() {
-    periodic_y(P, 1);
     #pragma acc parallel loop independent present(P)
-    for (int j = GC; j < GC+CY; j ++) {
-        P[GC- 1][j] = P[GC     ][j];
-        P[GC+CX][j] = P[GC+CX-1][j];
+    for (int i = GC; i < GC+CX; i ++) {
+        P[i][GC-1] = P[i][GC];
+        P[i][GC+CY] = P[i][GC+CY-1];
     }
+    periodic_x(P, GC, - P_DRIVER);
+}
+
+void turbulence_core(double u[2][CCX][CCY], double nut[CCX][CCY], int i, int j) {
+    double ue = u[0][i+1][j];
+    double uw = u[0][i-1][j];
+    double un = u[0][i][j+1];
+    double us = u[0][i][j-1];
+    double ve = u[1][i+1][j];
+    double vw = u[1][i-1][j];
+    double vn = u[1][i][j+1];
+    double vs = u[1][i][j-1];
+    double dudx = .5*DXI*(ue - uw);
+    double dudy = .5*DYI*(un - us);
+    double dvdx = .5*DXI*(ve - vw);
+    double dvdy = .5*DYI*(vn - vs);
+    double Du = sqrt(2*dudx*dudx + 2*dvdy*dvdy + sq(dudy + dvdx));
+    double De = sqrt(DX*DY);
+    double LC = C_SMAGORINSKY*De;
+    nut[i][j] = sq(LC)*Du;
+}
+
+void turbulence() {
+    #pragma acc parallel loop independent collapse(2) present(U, NUT)
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        turbulence_core(U, NUT, i, j);
+    }}
+}
+
+void nut_bc() {
+    #pragma acc parallel loop independent present(NUT)
+    for (int i = GC; i < GC+CX; i ++) {
+        NUT[i][GC- 1] = NUT[i][GC     ];
+        NUT[i][GC+CY] = NUT[i][GC+CY-1];
+    }
+    periodic_x(NUT, GC, 0);
 }
 
 void grid_init() {
     for (int i = 0; i < CCX; i ++) {
-        X[i] = (i - GC + 1)*DX;
+        X[i] = (i - GC)*DX;
     }
     for (int j = 0; j < CCY; j ++) {
-        Y[j] = (j - GC)*DY;
+        Y[j] = (j - GC+1)*DY;
     }
     #pragma acc update device(X, Y)
 }
@@ -570,7 +435,9 @@ void eq_init() {
         double ae = DDXI;
         double aw = DDXI;
         double an = DDYI;
+        // if (j == GC+CY-1) an = 0;
         double as = DDYI;
+        // if (j == GC     ) as = 0;
         double ac = - (ae + aw + an + as);
         PMAT[0][i][j] = ac;
         PMAT[1][i][j] = ae;
@@ -593,13 +460,27 @@ void eq_init() {
     }}
 }
 
+#define U_INFLOW 1
+#define V_INFLOW 0
+
 void field_init() {
-    #pragma acc parallel loop independent collapse(2) present(U, P, inflowHandler)
+    #pragma acc parallel loop independent collapse(2) present(U, P)
     for (int i = 0; i < CCX; i ++) {
     for (int j = 0; j < CCY; j ++) {
-        U[0][i][j] = inflowHandler.mainstream_u;
-        U[1][i][j] = inflowHandler.mainstream_v;
+        U[0][i][j] = U_INFLOW;
+        U[1][i][j] = V_INFLOW;
         P[i][j] = 0;
+    }}
+}
+
+void force_grid() {
+    #pragma acc parallel loop independent collapse(2) present(U, FLAG, GRID_X, GRID_Y, X, Y)
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+        if (FLAG[i][j]) {
+            U[0][i][j] = 0;
+            U[1][i][j] = 0;
+        }
     }}
 }
 
@@ -607,32 +488,58 @@ void init() {
     acc_init();
     lsvar.init();
     grid_init();
-    inflowHandler.init(0, GC, 2, CY, "data/inflow_boundary");
-    // initialHandler.init(0, 0, CCX, CCY, "data/initial_field");
-    // initialHandler.apply(0, U);
     field_init();
     eq_init();
-    // inflowHandler.apply(0, U);
+
+    for (int n = 0; n < GRID_NUM; n ++) {
+        GRID_X[n] = 1;
+        GRID_Y[n] = LY/(GRID_NUM-1)*n;
+    }
+    #pragma acc update device(GRID_X, GRID_Y)
+
+    int true_fluid = 0;
+    for (int i = 0; i < CCX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+        for (int n = 0; n < GRID_NUM; n ++) {
+            double dx = X[i] - GRID_X[n];
+            double dy = Y[j] - GRID_Y[n];
+            if (dx <= GRID_THICKNESS_X && dx >= 0 && fabs(dy) <= GRID_THICKNESS_Y*0.5) {
+                FLAG[i][j] = 1;
+                break;
+            }
+        }
+    }}
+    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = GC; j < GC+CY; j ++) {
+        if (!FLAG[i][j]) {
+            true_fluid ++;
+        }
+    }}
+    #pragma acc update device(FLAG)
+    P_DRIVER_COEFFICIENT = CXY/double(true_fluid);
+    printf("%e\n", P_DRIVER_COEFFICIENT);
+
+    force_grid();
+    velocity_bc();
+    
     interpolation(MAXDIAGI);
     printf("max diag = %lf\n", 1./MAXDIAGI);
 }
 
 void finalize() {
-    inflowHandler.finalize();
-    // initialHandler.finalize();
     lsvar.finalize();
     acc_finalize();
 }
 
 void output_field(int n) {
     #pragma acc update self(U, P, DIV)
-    string fname_base = "data/2dinflow.csv";
+    string fname_base = "data/grid-turbulence.csv";
     vector<char> fname(fname_base.size() + 32);
     sprintf(fname.data(), "%s.%d", fname_base.c_str(), n);
     FILE *file = fopen(fname.data(), "w");
     fprintf(file, "x,y,z,u,v,w,p,div\n");
-    for (int j = GC; j < GC+CY; j ++) {
-    for (int i = GC; i < GC+CX; i ++) {
+    for (int j = 0; j < CCY; j ++) {
+    for (int i = 0; i < CCX; i ++) {
         fprintf(file, "%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e,%12.5e\n", X[i], Y[j], 0., U[0][i][j], U[1][i][j], 0., P[i][j], DIV[i][j]);
     }}
     fclose(file);
@@ -642,8 +549,8 @@ void main_loop() {
     copy_field(UP[0], U[0]);
     copy_field(UP[1], U[1]);
     prediction();
-    periodic_y(U[0], GC);
-    periodic_y(U[1], GC);
+    periodic_x(U[0], GC, 0);
+    periodic_x(U[1], GC, 0);
     interpolation(MAXDIAGI);
 
     sor_poisson(PMAT, P, RHS, lsvar);
@@ -652,10 +559,17 @@ void main_loop() {
 
     projection_center();
     projection_interface();
+    force_grid();
     velocity_bc();
+
+    // turbulence();
+    // nut_bc();
 
     calc_divergence();
     max_cfl();
+
+    double bulk_u = outflow_monitor();
+    P_DRIVER = (U_INFLOW - bulk_u)*(CX*DX)*P_DRIVER_COEFFICIENT*2;
 }
 
 int main() {
@@ -664,7 +578,7 @@ int main() {
     for (ISTEP = 0; ISTEP <= MAXSTEP; ISTEP ++) {
         if (ISTEP >= 1) {
             main_loop();
-            printf("\r%9d, %10.5lf, %3d, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, MAX_CFL);
+            printf("\r%9d, %10.5lf, %4d, %10.3e, %10.3e, %10.3e, %10.3e, %10.3e", ISTEP, gettime(), LS_ITER, LS_ERR, RMS_DIV, MAX_CFL, outflow_monitor(), P_DRIVER);
             fflush(stdout);
         }
         if (ISTEP >= int(OUTPUT_START/DT) && ISTEP%int(OUTPUT_INTERVAL/DT) == 0) {
@@ -676,4 +590,3 @@ int main() {
     finalize();
     return 0;
 }
-

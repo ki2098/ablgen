@@ -6,6 +6,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <random>
+#include <unistd.h>
 
 typedef double complex[2];
 const static int REAL = 0;
@@ -14,23 +15,23 @@ const static int IMAG = 1;
 using namespace std;
 const static double PI = M_PI;
 
-const static int CX = 100;
-const static int CY = 100;
+const static int CX = 500;
+const static int CY = 500;
 const static int GC = 2;
 const static int CXY = CX*CY;
 const static int CCX = CX+2*GC;
 const static int CCY = CY+2*GC;
 const static int CCXY = CCX*CCY;
 
-const static double LX = 5;
-const static double LY = 5;
+const static double LX = 10;
+const static double LY = 10;
 const static double DX = LX/CX;
 const static double DY = LY/CY;
 const static double DXI = 1./DX;
 const static double DYI = 1./DY;
 const static double DDXI = DXI*DXI;
 const static double DDYI = DYI*DYI;
-const static double DT = 1e-3;
+const static double DT = 5e-4;
 const static double DTI = 1./DT;
 
 const static double RE = 1e4;
@@ -43,9 +44,9 @@ const static double LS_EPS = 1e-3;
 double LS_ERR;
 
 int ISTEP;
-const static double MAXT        = 1000.;
-const static double STATIC_AVG_START =500.;
-const static double OUTPUT_START = 900.;
+const static double MAXT        = 650.;
+const static double STATIC_AVG_START =400.;
+const static double OUTPUT_START = 550.;
 const static double OUTPUT_INTERVAL=1.;
 const static int    MAXSTEP     = int(MAXT/DT);
 double              RMS_DIV;
@@ -55,15 +56,18 @@ const static double C_SMAGORINSKY = 0.1;
 double              TURB_K, TURB_K_AVG=0.;
 
 const static double LOW_PASS = 10;
-const static double HIGH_PASS = 7;
-const static double FORCING_EFK = 1;
+const static double HIGH_PASS = 9.5;
+const static double FORCING_EFK = 2;
 const static double DRAG = 1e-2*FORCING_EFK;
 
-const static double UINFLOW = 0.5;
+const static double UINFLOW = 1.;
 const static double VINFLOW = 0.;
 
 const static int OUTPUT_OUTFLOW_OUTER = 1;
 const static int OUTPUT_OUTFLOW_INNER = GC;
+
+const static int FT_FORWARD = -1;
+const static int FT_BACKWARD = 1;
 
 double MAX_CFL;
 
@@ -94,7 +98,7 @@ struct BoundaryOutputHandler {
     int output_snapshot_numbers;
     double mainstream_u, mainstream_v;
 
-    void init(int startx, int sizex, int starty, int sizey, double mainu, double mainv, string fname) {
+    void init(int startx, int sizex, int starty, int sizey, double mainu, double mainv, string fname, double x[CCX], double y[CCY]) {
         file = fopen(fname.c_str(), "wb");
         output_snapshot_numbers = 0;
         output_start_x = startx;
@@ -110,6 +114,8 @@ struct BoundaryOutputHandler {
         fwrite(&output_snapshot_numbers, sizeof(int), 1, file);
         fwrite(&mainstream_u, sizeof(double), 1, file);
         fwrite(&mainstream_v, sizeof(double), 1, file);
+        fwrite(&x[output_start_x], sizeof(double), output_size_x, file);
+        fwrite(&y[output_start_y], sizeof(double), output_size_y, file);
     }
 
     void write(double u[2][CCX][CCY]) {
@@ -513,6 +519,7 @@ void kforce(complex f[NNX][NNY], int i, int j) {
 }
 
 void generate_force() {
+    #pragma omp parallel for collapse(2)
     for (int i = 0; i < NNX; i ++) {
     for (int j = 0; j < NNY; j ++) {
         if (wavenumber_pass(i,j)) {
@@ -528,8 +535,8 @@ void generate_force() {
         int I2 = j - GC;
         for (int K1 = 0; K1 < NNX; K1 ++) {
         for (int K2 = 0; K2 < NNY; K2 ++) {
-            double th1 = - 2.*PI*I1*K1/double(CX);
-            double th2 = - 2.*PI*I2*K2/double(CY);
+            double th1 = FT_BACKWARD*2.*PI*I1*K1/double(CX);
+            double th2 = FT_BACKWARD*2.*PI*I2*K2/double(CY);
             double Real = cos(th1 + th2);
             double Imag = sin(th1 + th2);
             F[i][j] += FF[K1][K2][REAL]*Real - FF[K1][K2][IMAG]*Imag;
@@ -616,10 +623,10 @@ void output_field(int n) {
 }
 
 void make_grid() {
-    for (int i = 0; i < GC+CX; i ++) {
+    for (int i = 0; i < CCX; i ++) {
         X[i] = (i - GC + .5)*DX;
     }
-    for (int j = 0; j < GC+CY; j ++) {
+    for (int j = 0; j < CCY; j ++) {
         Y[j] = (j - GC + .5)*DY;
     }
 }
@@ -647,6 +654,7 @@ void init_field() {
 }
 
 int main() {
+    printf("%d\n", getpid());
     make_grid();
     print_wavenumber_map();
     init_env();
@@ -656,8 +664,8 @@ int main() {
     printf("Forcing coefficient=%lf\n", FORCING_EFK);
     printf("Drag coefficient=%lf\n", DRAG);
 
-    boundaryOutput.init(0, 3, GC, CY, UINFLOW, VINFLOW, "data/inflow_boundary");
-    initialOutput.init(0, CCX, 0, CCY, UINFLOW, VINFLOW, "data/initial_field");
+    boundaryOutput.init(0, 3, 0, CCY, UINFLOW, VINFLOW, "data/inflow_boundary", X, Y);
+    // initialOutput.init(0, CCX, 0, CCY, UINFLOW, VINFLOW, "data/initial_field");
 
     for (ISTEP = 1; ISTEP <= MAXSTEP; ISTEP ++) {
         main_loop();
@@ -670,10 +678,10 @@ int main() {
         if (ISTEP >= int(OUTPUT_START/DT)) {
             #pragma acc update self(U)
             boundaryOutput.write(U);
-            if (ISTEP == int(OUTPUT_START/DT)) {
-                initialOutput.write(U);
-                initialOutput.finalize();
-            }
+            // if (ISTEP == int(OUTPUT_START/DT)) {
+            //     initialOutput.write(U);
+            //     initialOutput.finalize();
+            // }
         }
         if (ISTEP >= int(STATIC_AVG_START/DT)) {
             int nstep = ISTEP - int(STATIC_AVG_START/DT) + 1;
